@@ -2,6 +2,8 @@ import asyncio
 import os
 import random
 import aiohttp
+import json
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -12,14 +14,49 @@ from aiogram.client.default import DefaultBotProperties
 from api import process_card_async, parse_cc_string, extract_clean_response
 from shopify import get_bin_info, classify_result, approved_message, fmt_price, fmt_info
 
-# Pull from environment variables for easy Railway deployment
+# Pull from environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+ADMIN_ID = os.getenv("ADMIN_ID") 
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
+PREMIUM_FILE = "premium.json"
+
+# --- PREMIUM DATABASE LOGIC ---
+def load_premium():
+    """Loads the premium users from the JSON file."""
+    if os.path.exists(PREMIUM_FILE):
+        with open(PREMIUM_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_premium(data):
+    """Saves the premium users to the JSON file."""
+    with open(PREMIUM_FILE, "w") as f:
+        json.dump(data, f)
+
+def is_premium(user_id):
+    """Checks if a user is the admin or has an active subscription."""
+    if str(user_id) == str(ADMIN_ID):
+        return True # Admin always has access
+        
+    data = load_premium()
+    uid_str = str(user_id)
+    
+    if uid_str in data:
+        expiry = datetime.fromisoformat(data[uid_str])
+        if datetime.now() < expiry:
+            return True
+        else:
+            # Subscription expired, remove them
+            del data[uid_str]
+            save_premium(data)
+            
+    return False
+
+# --- HELPER FUNCTIONS ---
 def get_random_site():
-    """Pulls a random site from your sites.txt file"""
     try:
         with open("sites.txt", "r", encoding="utf-8") as f:
             sites = [line.strip() for line in f if line.strip() and line.startswith("http")]
@@ -27,25 +64,105 @@ def get_random_site():
                 return random.choice(sites)
     except FileNotFoundError:
         pass
-    return "https://shop.spam.com" # Fallback just in case
+    return "https://shop.spam.com" 
 
+# --- BOT COMMANDS ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.reply(
         "🤖 <b>Shopify Checker Ready</b>\n\n"
-        "Send <code>/chk CC|MM|YYYY|CVV</code> to test a card."
+        "Send <code>/chk CC|MM|YYYY|CVV</code> to test a card.\n"
+        "Send <code>/myplan</code> to check your subscription."
     )
+
+@dp.message(Command("myplan"))
+async def cmd_myplan(message: Message):
+    uid_str = str(message.from_user.id)
+    if uid_str == str(ADMIN_ID):
+        await message.reply("👑 <b>Admin Account</b>\nStatus: Lifetime Access")
+        return
+        
+    data = load_premium()
+    if uid_str in data:
+        expiry = datetime.fromisoformat(data[uid_str])
+        if datetime.now() < expiry:
+            await message.reply(f"💎 <b>Premium Active</b>\nExpires on: <code>{expiry.strftime('%Y-%m-%d %H:%M:%S')}</code>")
+            return
+            
+    await message.reply("🚫 You do not have an active premium subscription. Contact the admin to purchase access.")
+
+@dp.message(Command("addprem"))
+async def cmd_addprem(message: Message):
+    # Only Admin can use this
+    if str(message.from_user.id) != str(ADMIN_ID):
+        return
+
+    args = message.text.split()
+    if len(args) != 3:
+        await message.reply(
+            "⚠️ <b>Usage:</b> <code>/addprem [user_id] [duration]</code>\n"
+            "<b>Example:</b> <code>/addprem 123456789 7d</code>\n"
+            "<b>Units:</b> h (hours), d (days), m (months), y (years), lifetime"
+        )
+        return
+        
+    target_id = args[1]
+    duration = args[2].lower()
+    
+    if duration == 'lifetime':
+        expiry = datetime.now() + timedelta(days=36500) # 100 years
+    else:
+        unit = duration[-1]
+        try:
+            val = int(duration[:-1])
+            if unit == 'h': expiry = datetime.now() + timedelta(hours=val)
+            elif unit == 'd': expiry = datetime.now() + timedelta(days=val)
+            elif unit == 'm': expiry = datetime.now() + timedelta(days=val*30)
+            elif unit == 'y': expiry = datetime.now() + timedelta(days=val*365)
+            else: raise ValueError
+        except:
+            await message.reply("❌ <b>Invalid format!</b> Use numbers followed by h, d, m, y (e.g., 12h, 1m).")
+            return
+            
+    data = load_premium()
+    data[target_id] = expiry.isoformat()
+    save_premium(data)
+    await message.reply(f"✅ <b>Success!</b>\nUser <code>{target_id}</code> now has premium until {expiry.strftime('%Y-%m-%d')}.")
+
+@dp.message(Command("delprem"))
+async def cmd_delprem(message: Message):
+    # Only Admin can use this
+    if str(message.from_user.id) != str(ADMIN_ID):
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.reply("⚠️ <b>Usage:</b> <code>/delprem [user_id]</code>")
+        return
+        
+    target_id = args[1]
+    data = load_premium()
+    
+    if target_id in data:
+        del data[target_id]
+        save_premium(data)
+        await message.reply(f"🗑️ <b>Revoked:</b> User <code>{target_id}</code> premium access has been removed.")
+    else:
+        await message.reply("❌ User not found in the database.")
 
 @dp.message(Command("chk"))
 async def cmd_chk(message: Message):
+    # --- SUBSCRIPTION CHECK ---
+    if not is_premium(message.from_user.id):
+        await message.reply("⛔️ <b>Access Denied:</b> You need an active premium subscription to use this bot.")
+        return
+
     args = message.text.split(maxsplit=2)
     if len(args) < 2:
         await message.reply("⚠️ <b>Format:</b> <code>/chk CC|MM|YYYY|CVV [optional_site_url]</code>")
         return
 
     cc_string = args[1]
-    
-    # Use the site they provided, or pick one randomly from sites.txt
     target_site = args[2] if len(args) == 3 else get_random_site()
     if not target_site.startswith('http'):
         target_site = 'https://' + target_site
@@ -59,12 +176,10 @@ async def cmd_chk(message: Message):
     status_msg = await message.reply("⏳ <i>Processing against Shopify gateway...</i>")
 
     try:
-        # 1. Run the check (Logic from api.py)
         success, raw_message, gateway, price, currency = await process_card_async(
             parts['cc'], parts['mes'], parts['ano'], parts['cvv'], target_site, proxy_str=None
         )
 
-        # 2. Classify the result (Logic from shopify.py)
         category = classify_result(success, raw_message)
         appr_clean = approved_message(raw_message) if category == 'approved' else None
         clean_msg = appr_clean if appr_clean else extract_clean_response(raw_message)
@@ -76,16 +191,13 @@ async def cmd_chk(message: Message):
         elif category == 'tds':
             clean_msg = 'OTP_REQUIRED'
 
-        # 3. Fetch BIN Data (Logic from shopify.py)
         async with aiohttp.ClientSession() as session:
             brand, bank, country, level, type_cc, flag = await get_bin_info(session, parts['cc'])
 
-        # 4. Format values (Logic from shopify.py)
         price_display = fmt_price(price, currency)
         info_str = fmt_info(brand, type_cc, level)
         gateway_display = gateway if gateway else "Shopify Payments"
 
-        # 5. Build the final output identical to your CLI
         if category == 'charged':
             status_emoji = "🔥 <b>CHARGED</b>"
         elif category == 'approved':
