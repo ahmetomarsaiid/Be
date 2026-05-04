@@ -2,3 +2,5 @@ aiohttp
 Flask
 requests
 aiogram>=3.15.0
+requests-toolbelt
+user_agent
