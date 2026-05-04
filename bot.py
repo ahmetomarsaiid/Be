@@ -58,7 +58,6 @@ class AppStates(StatesGroup):
 def kb_home(user_id):
     is_admin = str(user_id) == str(ADMIN_ID)
     
-    # Everyone sees these base buttons
     kb = [
         [InlineKeyboardButton(text="💳 Single Check", callback_data="ui_single"),
          InlineKeyboardButton(text="📁 Mass Check", callback_data="ui_mass")],
@@ -66,7 +65,6 @@ def kb_home(user_id):
          InlineKeyboardButton(text="🔑 Redeem Key", callback_data="ui_redeem")]
     ]
     
-    # ONLY the Admin sees this extra row
     if is_admin:
         kb.append([InlineKeyboardButton(text="⚙️ Admin Control Panel", callback_data="ui_admin")])
         
@@ -94,25 +92,45 @@ async def clean_chat(message: Message):
 # --- MAIN DASHBOARD ---
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    await state.clear()
     await clean_chat(message)
+    
+    # Check memory for an old dashboard and delete it
+    data = await state.get_data()
+    old_msg_id = data.get("dash_id")
+    if old_msg_id:
+        try: await bot.delete_message(chat_id=message.chat.id, message_id=old_msg_id)
+        except TelegramBadRequest: pass
+
+    await state.clear()
     
     tier = check_tier(message.from_user.id)
     text = (
-        f"⚡️ <b>NEXUS CHECKER OS</b> ⚡️\n"
+        f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
         f"Welcome, <b>{message.from_user.first_name}</b>.\n"
         f"Access Level: {tier}\n\n"
         f"<i>Select a module to deploy:</i>"
     )
-    await message.answer(text, reply_markup=kb_home(message.from_user.id))
+    new_msg = await message.answer(text, reply_markup=kb_home(message.from_user.id))
+    
+    # Save the new dashboard ID so we can delete it next time
+    await state.update_data(dash_id=new_msg.message_id)
 
 @router.callback_query(F.data == "ui_home")
 async def nav_home(callback: CallbackQuery, state: FSMContext):
+    # Retrieve the old dash ID before clearing state
+    data = await state.get_data()
+    old_msg_id = data.get("dash_id")
+    
     await state.clear()
+    
+    # Put the dash ID back in state
+    if old_msg_id:
+        await state.update_data(dash_id=old_msg_id)
+
     tier = check_tier(callback.from_user.id)
     text = (
-        f"⚡️ <b>NEXUS CHECKER OS</b> ⚡️\n"
+        f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
         f"Welcome, <b>{callback.from_user.first_name}</b>.\n"
         f"Access Level: {tier}\n\n"
@@ -124,9 +142,7 @@ async def nav_home(callback: CallbackQuery, state: FSMContext):
 # --- PREMIUM FEATURE GATES ---
 @router.callback_query(F.data == "ui_single")
 async def nav_single(callback: CallbackQuery, state: FSMContext):
-    # THE PREMIUM GATEKEEPER
     if check_tier(callback.from_user.id) == "🆓 FREE":
-        # Throws a native Telegram pop-up instead of a chat message!
         return await callback.answer("⛔️ PREMIUM EXCLUSIVE!\n\nYou must redeem a key to use the checker modules.", show_alert=True)
         
     await callback.message.edit_text(
@@ -140,7 +156,6 @@ async def nav_single(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "ui_mass")
 async def nav_mass(callback: CallbackQuery):
-    # THE PREMIUM GATEKEEPER
     if check_tier(callback.from_user.id) == "🆓 FREE":
         return await callback.answer("⛔️ PREMIUM EXCLUSIVE!\n\nYou must redeem a key to use the mass checker.", show_alert=True)
         
@@ -164,6 +179,13 @@ async def process_card(message: Message, state: FSMContext):
         await err.delete()
         return
 
+    # Delete the old menu message completely so the new loading screen drops fresh at the bottom
+    data = await state.get_data()
+    old_msg_id = data.get("dash_id")
+    if old_msg_id:
+        try: await bot.delete_message(chat_id=message.chat.id, message_id=old_msg_id)
+        except TelegramBadRequest: pass
+
     loading = await message.answer(
         f"⏳ <b>AUTHORIZING CONNECTION...</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -171,9 +193,11 @@ async def process_card(message: Message, state: FSMContext):
         f"Status: <i>Pinging Shopify Gateway...</i>",
         reply_markup=kb_back()
     )
+    
+    # Save this new loading screen as the new "dashboard"
+    await state.update_data(dash_id=loading.message_id)
 
     try:
-        # PINGING YOUR API.PY
         success, raw_message, gateway, price, currency = await process_card_async(
             parts['cc'], parts['mes'], parts['ano'], parts['cvv'], "https://shop.spam.com", proxy_str=None
         )
@@ -191,14 +215,18 @@ async def process_card(message: Message, state: FSMContext):
             f"ツ <b>Response:</b> <code>{clean_msg}</code>\n"
             f"キ <b>Gateway:</b> {gateway or 'Shopify'}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"<i>Powered by Nexus OS</i>"
+            f"<i>Powered by BEAR OS</i>"
         )
         await loading.edit_text(result_text, reply_markup=kb_back())
         
     except Exception as e:
         await loading.edit_text(f"⚠️ <b>Fatal Error:</b> {str(e)}", reply_markup=kb_back())
 
+    # We clear the state but KEEP the dash_id so the back button knows what to do
+    dash_id = (await state.get_data()).get("dash_id")
     await state.clear()
+    if dash_id:
+        await state.update_data(dash_id=dash_id)
 
 # --- KEY REDEMPTION ---
 @router.callback_query(F.data == "ui_redeem")
@@ -226,6 +254,7 @@ async def process_key(message: Message, state: FSMContext):
     duration = keys_db[key_input]
     if duration == 'life': expiry = datetime.now() + timedelta(days=36500)
     elif duration.endswith('d'): expiry = datetime.now() + timedelta(days=int(duration[:-1]))
+    elif duration.endswith('m'): expiry = datetime.now() + timedelta(days=int(duration[:-1])*30)
     
     prem_db = load_db(PREMIUM_FILE)
     prem_db[str(message.from_user.id)] = expiry.isoformat()
@@ -234,14 +263,22 @@ async def process_key(message: Message, state: FSMContext):
     del keys_db[key_input]
     save_db(KEYS_FILE, keys_db)
     
+    # Delete old dashboard
+    data = await state.get_data()
+    old_msg_id = data.get("dash_id")
+    if old_msg_id:
+        try: await bot.delete_message(chat_id=message.chat.id, message_id=old_msg_id)
+        except TelegramBadRequest: pass
+
     success = await message.answer(f"🎉 <b>Redeemed!</b> You have Premium until {expiry.strftime('%Y-%m-%d')}")
     await state.clear()
     
-    # Auto-refresh the dashboard so their tier updates
-    await message.answer(
-        f"⚡️ <b>NEXUS CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nAccess Level: 💎 PREMIUM\n\n<i>Select a module to deploy:</i>",
+    new_dash = await message.answer(
+        f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nAccess Level: 💎 PREMIUM\n\n<i>Select a module to deploy:</i>",
         reply_markup=kb_home(message.from_user.id)
     )
+    await state.update_data(dash_id=new_dash.message_id)
+    
     await asyncio.sleep(3)
     await success.delete()
 
@@ -281,7 +318,7 @@ async def admin_gen(callback: CallbackQuery):
     if str(callback.from_user.id) != str(ADMIN_ID): return
     duration = callback.data.split("_")[1]
     
-    new_key = "NEXUS-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(12))
+    new_key = "BEAR-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(12))
     
     db = load_db(KEYS_FILE)
     db[new_key] = duration
@@ -297,7 +334,7 @@ async def admin_gen(callback: CallbackQuery):
     await callback.answer()
 
 async def main():
-    print("Nexus OS Backend Online...")
+    print("BEAR OS Backend Online...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
