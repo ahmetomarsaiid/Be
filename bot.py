@@ -6,6 +6,7 @@ import json
 import time
 import re
 import aiohttp
+import html
 from datetime import datetime, timedelta
 import traceback
 
@@ -59,7 +60,7 @@ def save_db(filename, data):
 
 def check_tier(user_id):
     if is_admin(user_id): 
-        return "👑 ADMIN"
+        return "👑 Admin"
         
     db = load_db(PREMIUM_FILE)
     uid_str = str(user_id)
@@ -68,14 +69,14 @@ def check_tier(user_id):
         try:
             expiry = datetime.fromisoformat(str(db[uid_str]))
             if datetime.now() < expiry: 
-                return "💎 PREMIUM"
+                return "💎 Premium"
             else:
                 del db[uid_str]
                 save_db(PREMIUM_FILE, db)
         except:
-            return "💎 PREMIUM (Legacy)"
+            return "💎 Premium (Legacy)"
             
-    return "🆓 FREE"
+    return "🆓 Free"
 
 def add_user(user_id):
     try:
@@ -108,39 +109,35 @@ class AppStates(StatesGroup):
     waiting_paypal_single = State()
     waiting_paypal_mass = State()
 
-# --- RESULT UI FORMATTER ---
+# --- RESULT UI FORMATTER (BEAUTIFUL VERSION) ---
 def format_result(status, checker, result, cc, country, flag, bank, brand, c_type, total, app, dec, err, start_time, tier, username):
     elapsed = time.time() - start_time
-    speed = total / elapsed if elapsed > 0 else 0
-    hit_rate = round((app / total * 100), 2) if total > 0 else 0
-    icon = "✅" if status in ["APPROVED", "CHARGED"] else "❌" if status == "DECLINED" else "⚠️"
     
-    return f"""<code>━━━━━━━━━━━━━━━━━━━━
-{icon} {checker} — {result}
-━━━━━━━━━━━━━━━━━━━━
+    # Premium Header Selection
+    if status in ["APPROVED", "LIVE"]:
+        header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
+    elif status == "CHARGED":
+        header = "𝗖𝗛𝗔𝗥𝗚𝗘𝗗 🔥"
+    elif status == "DECLINED":
+        header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
+    else:
+        header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
+    
+    return f"""<b>{header}</b>
 
-💳 Card       : {cc}
-📍 Country    : {country} {flag}
-🏦 Bank       : {bank}
-💠 Brand      : {brand}
-💳 Type       : {c_type}
+<b>𝗖𝗖 ⇾</b> <code>{cc}</code>
+<b>𝗚𝗮𝘁𝗲𝘄𝗮𝘆 ⇾</b> {checker}
+<b>𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 ⇾</b> <code>{result}</code>
+<b>𝗕𝗜𝗡 ⇾</b> {brand} — {c_type.upper()}
+<b>𝗕𝗮𝗻𝗸 ⇾</b> {bank} | {country} {flag}
 
-📦 Total      : {total}
-✅ Approved   : {app}
-❌ Declined   : {dec}
-⚠️ Errors     : {err}
+<b>𝗧𝗶𝗺𝗲 ⇾</b> {elapsed:.2f}s
+<b>𝗖𝗵𝗲𝗰𝗸𝗲𝗱 𝗕𝘆 ⇾</b> @{username}
+🔑 <b>𝗧𝗶𝗲𝗿 ⇾</b> {tier}
+◆━━━━━━━━━━━━━━━━━━━━━◆
+📦 <b>Total:</b> {total} | ✅ <b>App:</b> {app} | ❌ <b>Dec:</b> {dec} | ⚠️ <b>Err:</b> {err}"""
 
-📈 Hit Rate   : {hit_rate}%
-⚡ Speed      : {speed:.2f} cards/s
-⏱ Time       : {elapsed:.1f}s
-
-🔑 Tier       : {tier}
-
-━━━━━━━━━━━━━━━━━━━━
-👤 User       : @{username}
-━━━━━━━━━━━━━━━━━━━━</code>"""
-
-# --- DEBUG COMMAND (FIXED SECURITY LEAK) ---
+# --- DEBUG COMMAND ---
 @router.message(Command("myid"))
 async def cmd_myid(message: Message):
     uid = str(message.from_user.id)
@@ -155,14 +152,13 @@ async def cmd_myid(message: Message):
     )
     await message.answer(res)
 
-# --- CORE MENU & INFO (FIXED HTML PARSE ERROR) ---
+# --- CORE MENU & INFO ---
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     try:
         await state.clear() 
         add_user(message.from_user.id)
         
-        # Using standard bold tags instead of a massive code block
         menu_text = (
             "👋 <b>Welcome to the Checker Bot</b>\n\n"
             "📌 <b>Available Commands:</b>\n\n"
@@ -191,8 +187,8 @@ async def cmd_start(message: Message, state: FSMContext):
         menu_text += "\n━━━━━━━━━━━━━━━━━━━━"
         await message.answer(menu_text)
     except Exception as e:
-        # Fallback to plain text so we definitely see the error
-        await message.answer(f"BOT ERROR IN START: {str(e)}")
+        safe_error = html.escape(str(e))
+        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{safe_error}</code>")
 
 @router.message(Command("status"))
 async def cmd_status(message: Message, state: FSMContext):
@@ -204,7 +200,7 @@ async def cmd_status(message: Message, state: FSMContext):
         
         if is_admin(uid):
             expiry_text = "Lifetime"
-        elif tier in ["💎 PREMIUM", "💎 PREMIUM (Legacy)"]:
+        elif "Premium" in tier:
             try:
                 exp = datetime.fromisoformat(db[uid])
                 expiry_text = exp.strftime('%Y-%m-%d %H:%M:%S')
@@ -215,7 +211,8 @@ async def cmd_status(message: Message, state: FSMContext):
             
         await message.answer(f"👤 <b>Your Status</b>\n━━━━━━━━━━\n🔑 <b>Tier:</b> {tier}\n⏳ <b>Expires:</b> {expiry_text}")
     except Exception as e:
-        await message.answer(f"BOT ERROR IN STATUS: {str(e)}")
+        safe_error = html.escape(str(e))
+        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{safe_error}</code>")
 
 # --- KEY & ADMIN SYSTEM ---
 @router.message(Command("genkey"))
@@ -274,7 +271,8 @@ async def cmd_redeem(message: Message, command: CommandObject, state: FSMContext
         
         await message.answer(f"✅ <b>Successfully Redeemed!</b>\nAdded {days} days to your subscription.")
     except Exception as e:
-        await message.answer(f"BOT ERROR IN REDEEM: {str(e)}")
+        safe_error = html.escape(str(e))
+        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{safe_error}</code>")
 
 @router.message(Command("broadcast"))
 async def cmd_broadcast(message: Message, command: CommandObject, state: FSMContext):
@@ -306,7 +304,7 @@ async def process_checker(message: Message, text: str, checker: str):
     user_id = message.from_user.id
     tier = check_tier(user_id)
     
-    if tier == "🆓 FREE" and "mass" in checker.lower() and not is_admin(user_id):
+    if "Free" in tier and "mass" in checker.lower() and not is_admin(user_id):
         return await message.answer("❌ Upgrade to Premium to use Mass Checkers.")
         
     ccs = re.findall(r"\d{15,16}\|\d{2}\|\d{2,4}\|\d{3,4}", text)
@@ -331,11 +329,23 @@ async def process_checker(message: Message, text: str, checker: str):
             try:
                 if "Shopify" in checker:
                     success, raw, g_name, p, c = await process_card_async(cc_clean, mes, ano, cvv, "https://shop.spam.com")
-                    status = "CHARGED" if success else "DECLINED"
                     resp = extract_clean_response(raw)
+                    
+                    # --- BUG FIX: Read the text, not just the boolean ---
+                    resp_upper = resp.upper()
+                    if any(x in resp_upper for x in ["CHARGED", "ORDER_PLACED", "THANK YOU"]):
+                        status = "CHARGED"
+                    elif any(x in resp_upper for x in ["APPROVED", "INSUFFICIENT", "OTP", "LIVE", "CVV2", "SECURITY_CODE"]):
+                        status = "APPROVED"
+                    elif any(x in resp_upper for x in ["DECLINED", "FRAUD", "ERROR", "INVALID", "INCORRECT", "DO_NOT_HONOR"]):
+                        status = "DECLINED"
+                    else:
+                        status = "CHARGED" if success else "DECLINED"
+                        
                 else: 
                     status, raw = await asyncio.to_thread(check_paypal_cc, cc)
                     resp = extract_clean_response(raw)
+                    
             except Exception as e:
                 status, resp = "ERROR", str(e)[:30]
                 
@@ -357,8 +367,7 @@ async def process_checker(message: Message, text: str, checker: str):
                     except: pass
             
             if total_cards == 1 or (idx % 3 == 0) or idx == total_cards:
-                progress_header = f"⏳ <b>Checking... ({idx}/{total_cards})</b>\n\n" if idx < total_cards else f"✅ <b>Check Completed!</b>\n\n"
-                try: await msg.edit_text(progress_header + ui_text)
+                try: await msg.edit_text(ui_text)
                 except: pass
             await asyncio.sleep(0.5)
 
@@ -422,7 +431,7 @@ async def exe_paypal_mass(message: Message, state: FSMContext):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - COMMAND SYSTEM READY (SAFE MENU APPLIED)")
+    print("BEAR OS PRO DEPLOYED - PREMIUM UI ACTIVE")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
