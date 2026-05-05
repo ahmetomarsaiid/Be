@@ -11,9 +11,10 @@ from datetime import datetime, timedelta
 import traceback
 
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message
+from aiogram.types import Message, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
@@ -100,6 +101,13 @@ async def get_bin_info(session, cc):
                 )
     except: pass
     return "Unknown", "Unknown", "Unknown", "", "Unknown"
+
+# --- FSM STATES ---
+class AppStates(StatesGroup):
+    waiting_shopify_single = State()
+    waiting_shopify_mass = State()
+    waiting_paypal_single = State()
+    waiting_paypal_mass = State()
 
 # --- RESULT UI FORMATTER ---
 def format_result(status, checker, result, cc, country, flag, bank, brand, c_type, total, app, dec, err, start_time, tier, username):
@@ -304,7 +312,17 @@ async def process_checker(message: Message, text: str, checker: str):
     if total_cards > 1 and "single" in checker.lower() and not is_admin(user_id):
         return await message.answer("⚠️ You provided multiple cards for a Single Check. Use Mass Check instead.")
         
-    msg = await message.answer(f"⏳ <b>Initializing {checker}...</b>\nProcessing {total_cards} cards.")
+    # --- PREMIUM INITIALIZATION MESSAGE ---
+    init_msg = (
+        f"<b>⚙️ 𝗣𝗥𝗢𝗖𝗘𝗦𝗦𝗜𝗡𝗚 𝗥𝗘𝗤𝗨𝗘𝗦𝗧</b>\n"
+        f"◆━━━━━━━━━━━━━━━━━━━━━◆\n"
+        f"<b>𝗚𝗮𝘁𝗲𝘄𝗮𝘆 ⇾</b> {checker}\n"
+        f"<b>𝗤𝘂𝗲𝘂𝗲   ⇾</b> {total_cards} Card{'s' if total_cards > 1 else ''}\n"
+        f"<b>𝗦𝘁𝗮𝘁𝘂𝘀  ⇾</b> ⏳ <i>Starting engine...</i>\n"
+        f"◆━━━━━━━━━━━━━━━━━━━━━◆"
+    )
+    msg = await message.answer(init_msg)
+    
     app, dec, err = 0, 0, 0
     start_time = time.time()
     username = message.from_user.username or message.from_user.first_name
@@ -354,9 +372,17 @@ async def process_checker(message: Message, text: str, checker: str):
                     try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{ui_text}")
                     except: pass
             
+            # --- PREMIUM PROGRESS HEADERS ---
             if total_cards == 1 or (idx % 3 == 0) or idx == total_cards:
-                try: await msg.edit_text(ui_text)
+                if idx < total_cards:
+                    header_text = f"<b>⚡ 𝗖𝗛𝗘𝗖𝗞𝗜𝗡𝗚 𝗖𝗔𝗥𝗗𝗦 [{idx}/{total_cards}]</b>\n\n"
+                else:
+                    header_text = f"<b>✅ 𝗖𝗛𝗘𝗖𝗞 𝗖𝗢𝗠𝗣𝗟𝗘𝗧𝗘𝗗 [{total_cards}/{total_cards}]</b>\n\n"
+                    
+                full_edit_text = header_text + ui_text
+                try: await msg.edit_text(full_edit_text)
                 except: pass
+                
             await asyncio.sleep(0.5)
 
 # --- ONE-LINE COMMAND ROUTERS ---
@@ -379,7 +405,6 @@ async def cmd_msh(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
     text = command.args or ""
     
-    # Check if they replied to a txt file or sent a file with the command as caption
     if message.reply_to_message and message.reply_to_message.document:
         file = await bot.get_file(message.reply_to_message.document.file_id)
         result = await bot.download_file(file.file_path)
@@ -413,9 +438,39 @@ async def cmd_mpp(message: Message, command: CommandObject, state: FSMContext):
         
     await process_checker(message, text, "PayPal Mass ($1)")
 
+# --- COMMAND MENU SETUP ---
+async def setup_bot_commands(bot: Bot):
+    user_commands = [
+        BotCommand(command="start", description="Show the main menu"),
+        BotCommand(command="mpp", description="Mass PayPal check"),
+        BotCommand(command="pp", description="Single PayPal check"),
+        BotCommand(command="msh", description="Mass Shopify check"),
+        BotCommand(command="sh", description="Single Shopify check"),
+        BotCommand(command="redeem", description="Redeem a Premium key"),
+        BotCommand(command="status", description="Check your plan tier"),
+        BotCommand(command="myid", description="View your account ID"),
+    ]
+    
+    admin_commands = user_commands + [
+        BotCommand(command="genkey", description="[ADMIN] Generate keys"),
+        BotCommand(command="broadcast", description="[ADMIN] Message all users"),
+        BotCommand(command="users", description="[ADMIN] View bot stats"),
+    ]
+    
+    # 1. Set default for everyone
+    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+    
+    # 2. Push hidden commands only to admins
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
+        except Exception as e:
+            print(f"[WARNING] Could not push admin commands to {admin_id}: {e}")
+
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - ONE-LINE COMMANDS ACTIVE")
+    print("BEAR OS PRO DEPLOYED - FINAL SCOPE ACTIVE")
+    await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
