@@ -16,7 +16,8 @@ from aiogram.types import (
     Message, CallbackQuery, BotCommand, 
     BotCommandScopeDefault, BotCommandScopeChat, 
     BotCommandScopeAllPrivateChats, 
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    BufferedInputFile
 )
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
@@ -264,6 +265,7 @@ async def cmd_start(message: Message, state: FSMContext):
             menu_text += (
                 "\n👑 <b>Admin Commands:</b>\n"
                 "• /genkey [qty] [days] → Generate keys\n"
+                "• /bulkgen [qty] → Mass Random CC File\n"
                 "• /broadcast [msg] → Message all users\n"
                 "• /users → Show bot statistics\n"
             )
@@ -298,7 +300,7 @@ async def cmd_status(message: Message, state: FSMContext):
         safe_error = html.escape(str(e))
         await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{safe_error}</code>")
 
-# --- CC GENERATOR ---
+# --- CC GENERATORS ---
 @router.message(Command("gen"))
 async def cmd_gen(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
@@ -313,7 +315,7 @@ async def cmd_gen(message: Message, command: CommandObject, state: FSMContext):
     if len(parts) > 1:
         try:
             amount = int(parts[1])
-            if amount > 50: amount = 50
+            if amount > 50: amount = 50 # Prevents crazy spam in chat
             if amount < 1: amount = 1
         except: pass
             
@@ -339,6 +341,73 @@ async def cmd_gen(message: Message, command: CommandObject, state: FSMContext):
 <b>𝗚𝗲𝗻𝗲𝗿𝗮𝘁𝗲𝗱 𝗕𝘆 ⇾</b> @{username}"""
 
     await message.answer(res)
+
+@router.message(Command("bulkgen"))
+async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContext):
+    await state.clear()
+    if not is_admin(message.from_user.id): 
+        return await message.answer("❌ Admin only command.")
+
+    args = command.args
+    amount = 1000 # Default if no number given
+    
+    if args:
+        try:
+            amount = int(args.strip())
+        except:
+            return await message.answer("⚠️ <b>Usage:</b> <code>/bulkgen 1000</code>")
+
+    # Hard cap at 50k to prevent Railway memory limits blowing up
+    if amount > 50000: amount = 50000 
+
+    msg = await message.answer(f"⏳ <b>Generating {amount} random mixed cards...</b>")
+    
+    # A mix of popular BINs to cycle through
+    random_bins = [
+        "414720", "436897", "453213", "401288", "414718", "423223", "443047", # Visa
+        "512345", "542418", "553890", "521367", "527515", "542543", "559758", # MC
+        "371234", "378282", "345678", "373737", # Amex
+        "601100", "650000", "644400" # Discover
+    ]
+
+    cards = []
+    current_year = datetime.now().year
+    
+    for _ in range(amount):
+        base_bin = random.choice(random_bins)
+        target_len = 15 if base_bin.startswith('34') or base_bin.startswith('37') else 16
+        
+        # Build the number randomly padding to target length
+        temp_cc = base_bin.ljust(target_len - 1, str(random.randint(0,9)))
+        
+        # Calculate Luhn Check Digit
+        digits = [int(x) for x in temp_cc]
+        for i in range(len(digits) - 1, -1, -2):
+            digits[i] *= 2
+            if digits[i] > 9: digits[i] -= 9
+        check_digit = (10 - (sum(digits) % 10)) % 10
+        cc = temp_cc + str(check_digit)
+        
+        mes = str(random.randint(1, 12)).zfill(2)
+        ano = str(random.randint(current_year, current_year + 7))
+        cvv_len = 4 if cc.startswith('3') else 3
+        cvv = "".join([str(random.randint(0, 9)) for _ in range(cvv_len)])
+        
+        cards.append(f"{cc}|{mes}|{ano}|{cvv}")
+
+    # Build the File in memory
+    cards_str = "\n".join(cards)
+    file_bytes = cards_str.encode('utf-8')
+    document = BufferedInputFile(file_bytes, filename=f"BEAR_MIXED_{amount}.txt")
+    
+    caption = (
+        f"✅ <b>Generated {amount} Mixed Cards</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👑 <b>Admin:</b> @{message.from_user.username or message.from_user.first_name}"
+    )
+
+    await message.answer_document(document, caption=caption)
+    await msg.delete() # Remove the "generating..." message
 
 # --- KEY & ADMIN SYSTEM ---
 @router.message(Command("genkey"))
@@ -587,6 +656,7 @@ async def setup_bot_commands(bot: Bot):
     ]
     
     admin_commands = user_commands + [
+        BotCommand(command="bulkgen", description="[ADMIN] Bulk random CC file"),
         BotCommand(command="genkey", description="[ADMIN] Generate keys"),
         BotCommand(command="broadcast", description="[ADMIN] Message all users"),
         BotCommand(command="users", description="[ADMIN] View bot stats"),
@@ -602,7 +672,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - CARD GEN INTEGRATED")
+    print("BEAR OS PRO DEPLOYED - BULK GEN ADDED")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
