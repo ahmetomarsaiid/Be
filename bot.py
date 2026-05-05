@@ -7,6 +7,7 @@ import time
 import re
 import aiohttp
 from datetime import datetime, timedelta
+import traceback
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message
@@ -20,11 +21,17 @@ from aiogram.client.default import DefaultBotProperties
 from api import process_card_async, parse_cc_string, extract_clean_response
 from paypal import check_paypal_cc 
 
-# --- CONFIGURATION (Reads directly from Railway Variables) ---
-BOT_TOKEN = os.getenv("BOT_TOKEN") 
+# --- SAFE CONFIGURATION ---
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 RAW_ADMINS = str(os.getenv("ADMIN_ID", ""))
-# Safely handles single IDs or comma-separated IDs from Railway
-ADMIN_IDS = [x.strip() for x in RAW_ADMINS.split(",") if x.strip()]
+
+# Aggressively clean the Railway variable (removes quotes, brackets, and spaces)
+ADMIN_IDS = [
+    re.sub(r'[^0-9]', '', x) # Keep ONLY numbers
+    for x in RAW_ADMINS.split(",") if x.strip()
+]
+# Remove empty strings if any
+ADMIN_IDS = [x for x in ADMIN_IDS if x]
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -58,17 +65,13 @@ def check_tier(user_id):
     
     if uid_str in db:
         try:
-            # Try to parse the new date format safely
             expiry = datetime.fromisoformat(str(db[uid_str]))
             if datetime.now() < expiry: 
                 return "💎 PREMIUM"
             else:
-                # Expired, clean up
                 del db[uid_str]
                 save_db(PREMIUM_FILE, db)
-        except Exception as e:
-            # If the database has old junk data, DO NOT CRASH
-            print(f"[WARNING] Database format bypass for {uid_str}: {e}")
+        except:
             return "💎 PREMIUM (Legacy)"
             
     return "🆓 FREE"
@@ -79,8 +82,7 @@ def add_user(user_id):
         if str(user_id) not in users:
             users[str(user_id)] = datetime.now().isoformat()
             save_db(USERS_FILE, users)
-    except Exception as e:
-        print(f"[ERROR] Failed to save user: {e}")
+    except: pass
 
 async def get_bin_info(session, cc):
     try:
@@ -137,152 +139,162 @@ def format_result(status, checker, result, cc, country, flag, bank, brand, c_typ
 👤 User       : @{username}
 ━━━━━━━━━━━━━━━━━━━━</code>"""
 
+# --- DEBUG COMMAND ---
+@router.message(Command("myid"))
+async def cmd_myid(message: Message):
+    uid = str(message.from_user.id)
+    admin_status = "✅ YES" if is_admin(uid) else "❌ NO"
+    
+    res = (
+        f"🔍 <b>System Diagnostic</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Your Real ID:</b> <code>{uid}</code>\n"
+        f"⚙️ <b>Railway Read ID:</b> <code>{ADMIN_IDS}</code>\n"
+        f"👑 <b>Admin Matched:</b> {admin_status}\n"
+        f"━━━━━━━━━━━━━━━━━━"
+    )
+    await message.answer(res)
+
 # --- CORE MENU & INFO ---
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /start")
-    await state.clear() 
-    add_user(message.from_user.id)
-    
-    menu_text = (
-        "<code>👋 Welcome to the Checker Bot\n\n"
-        "📌 Available Commands:\n\n"
-        "💳 Checkers:\n"
-        "• /paypal_mass → Mass PayPal check\n"
-        "• /paypal_mass_file → Mass PayPal (TXT File)\n"
-        "• /paypal_single → Single PayPal check\n"
-        "• /shopify_mass → Mass Shopify check\n"
-        "• /shopify_mass_file → Mass Shopify (TXT File)\n"
-        "• /shopify_single → Single Shopify check\n\n"
-        "🔑 Keys:\n"
-        "• /redeem → Redeem a key\n\n"
-        "⚙️ Other:\n"
-        "• /status → View your plan/status\n"
-    )
-    
-    if is_admin(message.from_user.id):
-        menu_text += (
-            "\n👑 Admin Commands:\n"
-            "• /genkey <qty> <days> → Generate keys\n"
-            "• /broadcast <msg> → Message all users\n"
-            "• /users → Show bot statistics\n"
+    try:
+        print(f"[DEBUG] Incoming /start from: {message.from_user.id}")
+        await state.clear() 
+        add_user(message.from_user.id)
+        
+        menu_text = (
+            "<code>👋 Welcome to the Checker Bot\n\n"
+            "📌 Available Commands:\n\n"
+            "💳 Checkers:\n"
+            "• /paypal_mass → Mass PayPal check\n"
+            "• /paypal_mass_file → Mass PayPal (TXT File)\n"
+            "• /paypal_single → Single PayPal check\n"
+            "• /shopify_mass → Mass Shopify check\n"
+            "• /shopify_mass_file → Mass Shopify (TXT File)\n"
+            "• /shopify_single → Single Shopify check\n\n"
+            "🔑 Keys:\n"
+            "• /redeem → Redeem a key\n\n"
+            "⚙️ Other:\n"
+            "• /status → View your plan/status\n"
+            "• /myid → Check your account ID\n"
         )
         
-    menu_text += "━━━━━━━━━━━━━━━━━━━━</code>"
-    await message.answer(menu_text)
+        if is_admin(message.from_user.id):
+            menu_text += (
+                "\n👑 Admin Commands:\n"
+                "• /genkey <qty> <days> → Generate keys\n"
+                "• /broadcast <msg> → Message all users\n"
+                "• /users → Show bot statistics\n"
+            )
+            
+        menu_text += "━━━━━━━━━━━━━━━━━━━━</code>"
+        await message.answer(menu_text)
+    except Exception as e:
+        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{traceback.format_exc()}</code>")
 
 @router.message(Command("status"))
 async def cmd_status(message: Message, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /status")
-    await state.clear()
-    
-    tier = check_tier(message.from_user.id)
-    db = load_db(PREMIUM_FILE)
-    uid = str(message.from_user.id)
-    
-    if is_admin(uid):
-        expiry_text = "Lifetime"
-    elif tier in ["💎 PREMIUM", "💎 PREMIUM (Legacy)"]:
-        try:
-            exp = datetime.fromisoformat(db[uid])
-            expiry_text = exp.strftime('%Y-%m-%d %H:%M:%S')
-        except:
-            expiry_text = "Lifetime (Legacy Format)"
-    else:
-        expiry_text = "N/A"
+    try:
+        await state.clear()
+        tier = check_tier(message.from_user.id)
+        db = load_db(PREMIUM_FILE)
+        uid = str(message.from_user.id)
         
-    await message.answer(f"👤 <b>Your Status</b>\n━━━━━━━━━━\n🔑 <b>Tier:</b> {tier}\n⏳ <b>Expires:</b> {expiry_text}")
+        if is_admin(uid):
+            expiry_text = "Lifetime"
+        elif tier in ["💎 PREMIUM", "💎 PREMIUM (Legacy)"]:
+            try:
+                exp = datetime.fromisoformat(db[uid])
+                expiry_text = exp.strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                expiry_text = "Lifetime (Legacy Format)"
+        else:
+            expiry_text = "N/A"
+            
+        await message.answer(f"👤 <b>Your Status</b>\n━━━━━━━━━━\n🔑 <b>Tier:</b> {tier}\n⏳ <b>Expires:</b> {expiry_text}")
+    except Exception as e:
+        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{traceback.format_exc()}</code>")
 
 # --- KEY & ADMIN SYSTEM ---
 @router.message(Command("genkey"))
 async def cmd_genkey(message: Message, command: CommandObject, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /genkey")
-    await state.clear()
-    
-    if not is_admin(message.from_user.id): 
-        return await message.answer("❌ Admin only command.")
-    
-    args = command.args
-    if not args:
-        return await message.answer("⚠️ Usage: <code>/genkey &lt;count&gt; &lt;duration&gt;</code>\nExample: <code>/genkey 10 7d</code>")
-    
     try:
+        await state.clear()
+        if not is_admin(message.from_user.id): 
+            return await message.answer("❌ Admin only command.")
+        
+        args = command.args
+        if not args:
+            return await message.answer("⚠️ Usage: <code>/genkey &lt;count&gt; &lt;duration&gt;</code>\nExample: <code>/genkey 10 7d</code>")
+        
         parts = args.split()
         count = int(parts[0])
         duration_str = parts[1].lower()
         days = int(duration_str.replace('d', '')) if 'd' in duration_str else int(duration_str)
-    except:
-        return await message.answer("⚠️ Invalid format. Use: <code>/genkey 10 7d</code>")
-        
-    keys_db = load_db(KEYS_FILE)
-    generated = []
-    
-    for _ in range(count):
-        k = "BEAR-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(12))
-        keys_db[k] = days
-        generated.append(f"<code>{k}</code>")
-        
-    save_db(KEYS_FILE, keys_db)
-    await message.answer(f"✅ <b>Generated {count} Keys ({days} Days)</b>\n\n" + "\n".join(generated))
+            
+        keys_db = load_db(KEYS_FILE)
+        generated = []
+        for _ in range(count):
+            k = "BEAR-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(12))
+            keys_db[k] = days
+            generated.append(f"<code>{k}</code>")
+            
+        save_db(KEYS_FILE, keys_db)
+        await message.answer(f"✅ <b>Generated {count} Keys ({days} Days)</b>\n\n" + "\n".join(generated))
+    except Exception as e:
+        await message.answer(f"⚠️ <b>ERROR:</b> Invalid format. Use: <code>/genkey 10 7d</code>")
 
 @router.message(Command("redeem"))
 async def cmd_redeem(message: Message, command: CommandObject, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /redeem")
-    await state.clear()
-    
-    key = command.args
-    if not key:
-        return await message.answer("⚠️ Usage: <code>/redeem &lt;key&gt;</code>")
-        
-    keys_db = load_db(KEYS_FILE)
-    if key not in keys_db:
-        return await message.answer("❌ Invalid or expired key.")
-        
-    days = keys_db[key]
-    prem_db = load_db(PREMIUM_FILE)
-    uid = str(message.from_user.id)
-    
-    current_expiry = datetime.now()
-    if uid in prem_db:
-        try:
-            saved_exp = datetime.fromisoformat(prem_db[uid])
-            if saved_exp > current_expiry:
-                current_expiry = saved_exp
-        except: pass
+    try:
+        await state.clear()
+        key = command.args
+        if not key: return await message.answer("⚠️ Usage: <code>/redeem &lt;key&gt;</code>")
             
-    prem_db[uid] = (current_expiry + timedelta(days=days)).isoformat()
-    del keys_db[key]
-    save_db(PREMIUM_FILE, prem_db)
-    save_db(KEYS_FILE, keys_db)
-    
-    await message.answer(f"✅ <b>Successfully Redeemed!</b>\nAdded {days} days to your subscription.")
+        keys_db = load_db(KEYS_FILE)
+        if key not in keys_db: return await message.answer("❌ Invalid or expired key.")
+            
+        days = keys_db[key]
+        prem_db = load_db(PREMIUM_FILE)
+        uid = str(message.from_user.id)
+        current_expiry = datetime.now()
+        
+        if uid in prem_db:
+            try:
+                saved_exp = datetime.fromisoformat(prem_db[uid])
+                if saved_exp > current_expiry: current_expiry = saved_exp
+            except: pass
+                
+        prem_db[uid] = (current_expiry + timedelta(days=days)).isoformat()
+        del keys_db[key]
+        save_db(PREMIUM_FILE, prem_db)
+        save_db(KEYS_FILE, keys_db)
+        
+        await message.answer(f"✅ <b>Successfully Redeemed!</b>\nAdded {days} days to your subscription.")
+    except Exception as e:
+        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{traceback.format_exc()}</code>")
 
 @router.message(Command("broadcast"))
 async def cmd_broadcast(message: Message, command: CommandObject, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /broadcast")
     await state.clear()
-    
     if not is_admin(message.from_user.id): return
     if not command.args: return await message.answer("⚠️ Include a message to broadcast.")
     
     users = load_db(USERS_FILE)
     sent = 0
     msg = await message.answer(f"⏳ Broadcasting to {len(users)} users...")
-    
     for uid in users:
         try:
             await bot.send_message(uid, f"📢 <b>Announcement</b>\n━━━━━━━━━━\n{command.args}")
             sent += 1
             await asyncio.sleep(0.05)
         except: pass
-        
     await msg.edit_text(f"✅ Broadcast complete. Sent to {sent}/{len(users)} users.")
 
 @router.message(Command("users"))
 async def cmd_users(message: Message, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /users")
     await state.clear()
-    
     if not is_admin(message.from_user.id): return
     users = load_db(USERS_FILE)
     prem = load_db(PREMIUM_FILE)
@@ -305,7 +317,6 @@ async def process_checker(message: Message, text: str, checker: str):
         return await message.answer("⚠️ You provided multiple cards for a Single Check. Use Mass Check instead.")
         
     msg = await message.answer(f"⏳ <b>Initializing {checker}...</b>\nProcessing {total_cards} cards.")
-    
     app, dec, err = 0, 0, 0
     start_time = time.time()
     username = message.from_user.username or message.from_user.first_name
@@ -348,13 +359,11 @@ async def process_checker(message: Message, text: str, checker: str):
                 progress_header = f"⏳ <b>Checking... ({idx}/{total_cards})</b>\n\n" if idx < total_cards else f"✅ <b>Check Completed!</b>\n\n"
                 try: await msg.edit_text(progress_header + ui_text)
                 except: pass
-                
             await asyncio.sleep(0.5)
 
 # --- COMMAND ROUTERS (ENTRY POINTS) ---
 @router.message(Command("shopify_single"))
 async def start_shopify_single(message: Message, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /shopify_single")
     await state.clear()
     await message.answer("🟢 Send the card to check (CC|MM|YYYY|CVV):")
     await state.set_state(AppStates.waiting_shopify_single)
@@ -362,14 +371,12 @@ async def start_shopify_single(message: Message, state: FSMContext):
 @router.message(Command("shopify_mass"))
 @router.message(Command("shopify_mass_file"))
 async def start_shopify_mass(message: Message, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /shopify_mass")
     await state.clear()
     await message.answer("🟢 Send your list of cards (Text or .txt File) for Mass Check:")
     await state.set_state(AppStates.waiting_shopify_mass)
 
 @router.message(Command("paypal_single"))
 async def start_paypal_single(message: Message, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /paypal_single")
     await state.clear()
     await message.answer("🔵 Send the card to check (CC|MM|YYYY|CVV):")
     await state.set_state(AppStates.waiting_paypal_single)
@@ -377,7 +384,6 @@ async def start_paypal_single(message: Message, state: FSMContext):
 @router.message(Command("paypal_mass"))
 @router.message(Command("paypal_mass_file"))
 async def start_paypal_mass(message: Message, state: FSMContext):
-    print(f"[DEBUG] Incoming command from: {message.from_user.id} - /paypal_mass")
     await state.clear()
     await message.answer("🔵 Send your list of cards (Text or .txt File) for Mass Check:")
     await state.set_state(AppStates.waiting_paypal_mass)
@@ -385,13 +391,11 @@ async def start_paypal_mass(message: Message, state: FSMContext):
 # --- FSM PROCESSORS ---
 @router.message(AppStates.waiting_shopify_single)
 async def exe_shopify_single(message: Message, state: FSMContext):
-    print(f"[DEBUG] Processing FSM from: {message.from_user.id} - Shopify Single")
     await state.clear()
     await process_checker(message, message.text, "Shopify Single")
 
 @router.message(AppStates.waiting_shopify_mass)
 async def exe_shopify_mass(message: Message, state: FSMContext):
-    print(f"[DEBUG] Processing FSM from: {message.from_user.id} - Shopify Mass")
     await state.clear()
     text = message.text
     if message.document:
@@ -402,13 +406,11 @@ async def exe_shopify_mass(message: Message, state: FSMContext):
 
 @router.message(AppStates.waiting_paypal_single)
 async def exe_paypal_single(message: Message, state: FSMContext):
-    print(f"[DEBUG] Processing FSM from: {message.from_user.id} - PayPal Single")
     await state.clear()
     await process_checker(message, message.text, "PayPal Single ($1)")
 
 @router.message(AppStates.waiting_paypal_mass)
 async def exe_paypal_mass(message: Message, state: FSMContext):
-    print(f"[DEBUG] Processing FSM from: {message.from_user.id} - PayPal Mass")
     await state.clear()
     text = message.text
     if message.document:
@@ -419,7 +421,7 @@ async def exe_paypal_mass(message: Message, state: FSMContext):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - COMMAND SYSTEM READY (RAILWAY ENV READY)")
+    print("BEAR OS PRO DEPLOYED - COMMAND SYSTEM READY")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
