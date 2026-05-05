@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import traceback
 
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, BotCommandScopeAllPrivateChats
+from aiogram.types import Message, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, BotCommandScopeAllPrivateChats, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -76,7 +76,7 @@ def check_tier(user_id):
         except:
             return "💎 Premium (Legacy)"
             
-    return "🆓 Free"
+    return "🔑 Key User"
 
 def add_user(user_id):
     try:
@@ -102,25 +102,52 @@ async def get_bin_info(session, cc):
     except: pass
     return "Unknown", "Unknown", "Unknown", "", "Unknown"
 
-# --- FSM STATES ---
-class AppStates(StatesGroup):
-    waiting_shopify_single = State()
-    waiting_shopify_mass = State()
-    waiting_paypal_single = State()
-    waiting_paypal_mass = State()
-
-# --- RESULT UI FORMATTER ---
-def format_result(status, checker, result, cc, country, flag, bank, brand, c_type, total, app, dec, err, start_time, tier, username):
+# --- PREMIUM UI FORMATTERS ---
+def format_summary(status_header, checker, total, app, dec, err, start_time, tier, username):
     elapsed = time.time() - start_time
+    processed = app + dec + err
+    speed = processed / elapsed if elapsed > 0 else 0
+    hit_rate = round((app / processed * 100), 2) if processed > 0 else 0
     
-    if status in ["APPROVED", "LIVE"]:
-        header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
-    elif status == "CHARGED":
-        header = "𝗖𝗛𝗔𝗥𝗚𝗘𝗗 🔥"
-    elif status == "DECLINED":
-        header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
-    else:
-        header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
+    # Using <code> wrapper makes the entire block tap-to-copy!
+    return f"""<code>╭━━━━━━━━━━━━━━━━━━━━━╮ &lt;/&gt;
+🏁 {checker.upper()} — {status_header}
+╰━━━━━━━━━━━━━━━━━━━━━╯
+📦 Total      : {total} cards
+✅ Approved   : {app}
+❌ Declined   : {dec}
+⚠️ Errors     : {err}
+📈 Hit Rate   : {hit_rate}%
+⚡ Avg Speed  : {speed:.1f} cards/s
+⏱ Time       : {elapsed:.1f}s
+━━━━━━━━━━━━━━━━━━━━━━━
+🎫 Tier       : {tier}
+-----------------------
+   BY @{username}
+━━━━━━━━━━━━━━━━━━━━━━━</code>"""
+
+def generate_stats_keyboard(app, dec, err, start_time):
+    elapsed = time.time() - start_time
+    processed = app + dec + err
+    speed = processed / elapsed if elapsed > 0 else 0
+    hit_rate = round((app / processed * 100), 2) if processed > 0 else 0
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"✅ {app}", callback_data="noop"),
+            InlineKeyboardButton(text=f"❌ {dec}", callback_data="noop"),
+            InlineKeyboardButton(text=f"⚠️ {err}", callback_data="noop")
+        ],
+        [
+            InlineKeyboardButton(text=f"📈 Hit Rate: {hit_rate}% • ⚡ {speed:.1f}/s", callback_data="noop")
+        ]
+    ])
+
+def format_single_hit(status, checker, result, cc, country, flag, bank, brand, c_type, elapsed, tier, username):
+    if status in ["APPROVED", "LIVE"]: header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
+    elif status == "CHARGED": header = "𝗖𝗛𝗔𝗥𝗚𝗘𝗗 🔥"
+    elif status == "DECLINED": header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
+    else: header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
     
     return f"""<b>{header}</b>
 
@@ -132,9 +159,12 @@ def format_result(status, checker, result, cc, country, flag, bank, brand, c_typ
 
 <b>𝗧𝗶𝗺𝗲 ⇾</b> {elapsed:.2f}s
 <b>𝗖𝗵𝗲𝗰𝗸𝗲𝗱 𝗕𝘆 ⇾</b> @{username}
-🔑 <b>𝗧𝗶𝗲𝗿 ⇾</b> {tier}
-◆━━━━━━━━━━━━━━━━━━━━━◆
-📦 <b>Total:</b> {total} | ✅ <b>App:</b> {app} | ❌ <b>Dec:</b> {dec} | ⚠️ <b>Err:</b> {err}"""
+🎫 <b>𝗧𝗶𝗲𝗿 ⇾</b> {tier}"""
+
+# Prevents the buttons from endlessly loading if accidentally clicked
+@router.callback_query(F.data == "noop")
+async def noop_callback(callback: CallbackQuery):
+    await callback.answer()
 
 # --- DEBUG COMMAND ---
 @router.message(Command("myid"))
@@ -301,7 +331,9 @@ async def process_checker(message: Message, text: str, checker: str):
     user_id = message.from_user.id
     tier = check_tier(user_id)
     
-    if "Free" in tier and "mass" in checker.lower() and not is_admin(user_id):
+    is_mass = "mass" in checker.lower()
+    
+    if "Free" in tier and is_mass and not is_admin(user_id):
         return await message.answer("❌ Upgrade to Premium to use Mass Checkers.")
         
     ccs = re.findall(r"\d{15,16}\|\d{2}\|\d{2,4}\|\d{3,4}", text)
@@ -309,23 +341,22 @@ async def process_checker(message: Message, text: str, checker: str):
         return await message.answer("❌ No valid cards found. Ensure format is CC|MM|YYYY|CVV")
         
     total_cards = len(ccs)
-    if total_cards > 1 and "single" in checker.lower() and not is_admin(user_id):
+    if total_cards > 1 and not is_mass and not is_admin(user_id):
         return await message.answer("⚠️ You provided multiple cards for a Single Check. Use Mass Check instead.")
         
-    init_msg = (
-        f"<b>⚙️ 𝗣𝗥𝗢𝗖𝗘𝗦𝗦𝗜𝗡𝗚 𝗥𝗘𝗤𝗨𝗘𝗦𝗧</b>\n"
-        f"◆━━━━━━━━━━━━━━━━━━━━━◆\n"
-        f"<b>𝗚𝗮𝘁𝗲𝘄𝗮𝘆 ⇾</b> {checker}\n"
-        f"<b>𝗤𝘂𝗲𝘂𝗲   ⇾</b> {total_cards} Card{'s' if total_cards > 1 else ''}\n"
-        f"<b>𝗦𝘁𝗮𝘁𝘂𝘀  ⇾</b> ⏳ <i>Starting engine...</i>\n"
-        f"◆━━━━━━━━━━━━━━━━━━━━━◆"
-    )
-    msg = await message.answer(init_msg)
-    
     app, dec, err = 0, 0, 0
     start_time = time.time()
     username = message.from_user.username or message.from_user.first_name
     
+    # 1. SETUP INITIAL MESSAGE
+    if is_mass:
+        init_text = format_summary("STARTING...", checker, total_cards, app, dec, err, start_time, tier, username)
+        kb = generate_stats_keyboard(app, dec, err, start_time)
+        msg = await message.answer(init_text, reply_markup=kb)
+    else:
+        msg = await message.answer(f"⏳ <b>Initializing {checker}...</b>")
+
+    # 2. RUN THE CHECKER LOOP
     async with aiohttp.ClientSession() as session:
         for idx, cc in enumerate(ccs, 1):
             parts = parse_cc_string(cc)
@@ -358,29 +389,37 @@ async def process_checker(message: Message, text: str, checker: str):
             elif status == "DECLINED": dec += 1
             else: err += 1
             
-            ui_text = format_result(
-                status, checker, resp, cc, country, flag, bank, brand, c_type, 
-                idx, app, dec, err, start_time, tier, username
-            )
+            elapsed = time.time() - start_time
             
-            if status in ["APPROVED", "CHARGED", "LIVE"]:
-                await message.answer(ui_text) 
+            # --- 3. HANDLE SINGLE HIT OUTPUT ---
+            # If it's a mass check and it HITS, send a dedicated message so they don't lose it.
+            # If it's a single check, ALWAYS update the main message with the result.
+            if status in ["APPROVED", "CHARGED", "LIVE"] or not is_mass:
+                hit_text = format_single_hit(status, checker, resp, cc, country, flag, bank, brand, c_type, elapsed, tier, username)
                 
-                owner = ADMIN_IDS[0] if ADMIN_IDS else None
-                if owner and str(user_id) != owner:
-                    try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{ui_text}")
+                if not is_mass:
+                    try: await msg.edit_text(hit_text)
                     except: pass
-            
-            if total_cards == 1 or (idx % 3 == 0) or idx == total_cards:
-                if idx < total_cards:
-                    header_text = f"<b>⚡ 𝗖𝗛𝗘𝗖𝗞𝗜𝗡𝗚 𝗖𝗔𝗥𝗗𝗦 [{idx}/{total_cards}]</b>\n\n"
                 else:
-                    header_text = f"<b>✅ 𝗖𝗛𝗘𝗖𝗞 𝗖𝗢𝗠𝗣𝗟𝗘𝗧𝗘𝗗 [{total_cards}/{total_cards}]</b>\n\n"
+                    if status in ["APPROVED", "CHARGED", "LIVE"]:
+                        await message.answer(hit_text)
+                        
+                # Silent Admin Ping
+                if status in ["APPROVED", "CHARGED", "LIVE"]:
+                    owner = ADMIN_IDS[0] if ADMIN_IDS else None
+                    if owner and str(user_id) != owner:
+                        try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{hit_text}")
+                        except: pass
+            
+            # --- 4. HANDLE MASS CHECK UI UPDATES ---
+            if is_mass:
+                if (idx % 3 == 0) or idx == total_cards:
+                    header = "CHECKING" if idx < total_cards else "COMPLETE"
+                    summary_text = format_summary(header, checker, total_cards, app, dec, err, start_time, tier, username)
+                    kb = generate_stats_keyboard(app, dec, err, start_time)
+                    try: await msg.edit_text(summary_text, reply_markup=kb)
+                    except: pass
                     
-                full_edit_text = header_text + ui_text
-                try: await msg.edit_text(full_edit_text)
-                except: pass
-                
             await asyncio.sleep(0.5)
 
 # --- ONE-LINE COMMAND ROUTERS ---
@@ -438,7 +477,6 @@ async def cmd_mpp(message: Message, command: CommandObject, state: FSMContext):
 
 # --- COMMAND MENU SETUP ---
 async def setup_bot_commands(bot: Bot):
-    # These are the commands EVERYONE will see
     user_commands = [
         BotCommand(command="start", description="Show the main menu"),
         BotCommand(command="mpp", description="Mass PayPal check"),
@@ -450,17 +488,16 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="myid", description="View your account ID"),
     ]
     
-    # These are the commands ONLY YOU will see
     admin_commands = user_commands + [
         BotCommand(command="genkey", description="[ADMIN] Generate keys"),
         BotCommand(command="broadcast", description="[ADMIN] Message all users"),
         BotCommand(command="users", description="[ADMIN] View bot stats"),
     ]
     
-    # Force basic commands to ALL private chats
+    # 1. Set default for everyone
     await bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
-    # Force hidden commands specifically to Admins
+    # 2. Push hidden commands only to admins
     for admin_id in ADMIN_IDS:
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
@@ -469,7 +506,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - PRIVATE CHAT SCOPE ACTIVE")
+    print("BEAR OS PRO DEPLOYED - PREMIUM DESIGN UI ACTIVE")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
