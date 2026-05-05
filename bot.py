@@ -109,7 +109,7 @@ async def get_bin_info(session, cc):
     except: pass
     return "Unknown", "Unknown", "Unknown", "", "Unknown"
 
-# --- CARD GENERATOR LOGIC ---
+# --- CARD GENERATOR LOGIC (FIXED RANDOMIZER) ---
 def generate_cards(base_bin, amount=10):
     cards = []
     base_bin = base_bin.split('|')[0] 
@@ -135,7 +135,9 @@ def generate_cards(base_bin, amount=10):
         if len(temp_cc) > target_len - 1:
             temp_cc = temp_cc[:target_len - 1]
         elif len(temp_cc) < target_len - 1:
-            temp_cc = temp_cc.ljust(target_len - 1, str(random.randint(0,9)))
+            # FIX: Generate a distinct random number for every single missing spot
+            needed = (target_len - 1) - len(temp_cc)
+            temp_cc += "".join([str(random.randint(0, 9)) for _ in range(needed)])
             
         digits = [int(x) for x in temp_cc]
         for i in range(len(digits) - 1, -1, -2):
@@ -349,7 +351,7 @@ async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContex
         return await message.answer("❌ Admin only command.")
 
     args = command.args
-    amount = 1000 # Default if no number given
+    amount = 1000 
     
     if args:
         try:
@@ -357,12 +359,10 @@ async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContex
         except:
             return await message.answer("⚠️ <b>Usage:</b> <code>/bulkgen 1000</code>")
 
-    # Hard cap at 50k to prevent Railway memory limits blowing up
     if amount > 50000: amount = 50000 
 
     msg = await message.answer(f"⏳ <b>Generating {amount} random mixed cards...</b>")
     
-    # A mix of popular BINs to cycle through
     random_bins = [
         "414720", "436897", "453213", "401288", "414718", "423223", "443047", # Visa
         "512345", "542418", "553890", "521367", "527515", "542543", "559758", # MC
@@ -377,10 +377,10 @@ async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContex
         base_bin = random.choice(random_bins)
         target_len = 15 if base_bin.startswith('34') or base_bin.startswith('37') else 16
         
-        # Build the number randomly padding to target length
-        temp_cc = base_bin.ljust(target_len - 1, str(random.randint(0,9)))
+        # FIX: Generate a distinct random number for every missing spot
+        needed = (target_len - 1) - len(base_bin)
+        temp_cc = base_bin + "".join([str(random.randint(0, 9)) for _ in range(needed)])
         
-        # Calculate Luhn Check Digit
         digits = [int(x) for x in temp_cc]
         for i in range(len(digits) - 1, -1, -2):
             digits[i] *= 2
@@ -395,7 +395,6 @@ async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContex
         
         cards.append(f"{cc}|{mes}|{ano}|{cvv}")
 
-    # Build the File in memory
     cards_str = "\n".join(cards)
     file_bytes = cards_str.encode('utf-8')
     document = BufferedInputFile(file_bytes, filename=f"BEAR_MIXED_{amount}.txt")
@@ -407,7 +406,7 @@ async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContex
     )
 
     await message.answer_document(document, caption=caption)
-    await msg.delete() # Remove the "generating..." message
+    await msg.delete()
 
 # --- KEY & ADMIN SYSTEM ---
 @router.message(Command("genkey"))
@@ -516,7 +515,6 @@ async def process_checker(message: Message, text: str, checker: str):
     start_time = time.time()
     username = message.from_user.username or message.from_user.first_name
     
-    # 1. SETUP INITIAL MESSAGE
     if is_mass:
         init_text = format_summary("STARTING...", checker, total_cards, app, dec, err, start_time, tier, username)
         kb = generate_stats_keyboard(app, dec, err, start_time)
@@ -524,7 +522,6 @@ async def process_checker(message: Message, text: str, checker: str):
     else:
         msg = await message.answer(f"⏳ <b>Initializing {checker}...</b>")
 
-    # 2. RUN THE CHECKER LOOP
     async with aiohttp.ClientSession() as session:
         for idx, cc in enumerate(ccs, 1):
             parts = parse_cc_string(cc)
@@ -559,7 +556,6 @@ async def process_checker(message: Message, text: str, checker: str):
             
             elapsed = time.time() - start_time
             
-            # --- 3. HANDLE SINGLE HIT OUTPUT ---
             if status in ["APPROVED", "CHARGED", "LIVE"] or not is_mass:
                 hit_text = format_single_hit(status, checker, resp, cc, country, flag, bank, brand, c_type, elapsed, tier, username)
                 
@@ -570,14 +566,12 @@ async def process_checker(message: Message, text: str, checker: str):
                     if status in ["APPROVED", "CHARGED", "LIVE"]:
                         await message.answer(hit_text)
                         
-                # Silent Admin Ping
                 if status in ["APPROVED", "CHARGED", "LIVE"]:
                     owner = ADMIN_IDS[0] if ADMIN_IDS else None
                     if owner and str(user_id) != owner:
                         try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{hit_text}")
                         except: pass
             
-            # --- 4. HANDLE MASS CHECK UI UPDATES ---
             if is_mass:
                 if (idx % 3 == 0) or idx == total_cards:
                     header = "CHECKING" if idx < total_cards else "COMPLETE"
@@ -672,7 +666,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - BULK GEN ADDED")
+    print("BEAR OS PRO DEPLOYED - RANDOMIZER FIX APPLIED")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
