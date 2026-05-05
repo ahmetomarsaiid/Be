@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import traceback
 
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
+from aiogram.types import Message, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, BotCommandScopeAllPrivateChats
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -312,7 +312,6 @@ async def process_checker(message: Message, text: str, checker: str):
     if total_cards > 1 and "single" in checker.lower() and not is_admin(user_id):
         return await message.answer("⚠️ You provided multiple cards for a Single Check. Use Mass Check instead.")
         
-    # --- PREMIUM INITIALIZATION MESSAGE ---
     init_msg = (
         f"<b>⚙️ 𝗣𝗥𝗢𝗖𝗘𝗦𝗦𝗜𝗡𝗚 𝗥𝗘𝗤𝗨𝗘𝗦𝗧</b>\n"
         f"◆━━━━━━━━━━━━━━━━━━━━━◆\n"
@@ -372,7 +371,6 @@ async def process_checker(message: Message, text: str, checker: str):
                     try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{ui_text}")
                     except: pass
             
-            # --- PREMIUM PROGRESS HEADERS ---
             if total_cards == 1 or (idx % 3 == 0) or idx == total_cards:
                 if idx < total_cards:
                     header_text = f"<b>⚡ 𝗖𝗛𝗘𝗖𝗞𝗜𝗡𝗚 𝗖𝗔𝗥𝗗𝗦 [{idx}/{total_cards}]</b>\n\n"
@@ -440,6 +438,7 @@ async def cmd_mpp(message: Message, command: CommandObject, state: FSMContext):
 
 # --- COMMAND MENU SETUP ---
 async def setup_bot_commands(bot: Bot):
+    # These are the commands EVERYONE will see
     user_commands = [
         BotCommand(command="start", description="Show the main menu"),
         BotCommand(command="mpp", description="Mass PayPal check"),
@@ -451,16 +450,17 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="myid", description="View your account ID"),
     ]
     
+    # These are the commands ONLY YOU will see
     admin_commands = user_commands + [
         BotCommand(command="genkey", description="[ADMIN] Generate keys"),
         BotCommand(command="broadcast", description="[ADMIN] Message all users"),
         BotCommand(command="users", description="[ADMIN] View bot stats"),
     ]
     
-    # 1. Set default for everyone
-    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+    # Force basic commands to ALL private chats
+    await bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
-    # 2. Push hidden commands only to admins
+    # Force hidden commands specifically to Admins
     for admin_id in ADMIN_IDS:
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
@@ -469,7 +469,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - FINAL SCOPE ACTIVE")
+    print("BEAR OS PRO DEPLOYED - PRIVATE CHAT SCOPE ACTIVE")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
