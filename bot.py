@@ -11,7 +11,12 @@ from datetime import datetime, timedelta
 import traceback
 
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, BotCommandScopeAllPrivateChats, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, BotCommand, 
+    BotCommandScopeDefault, BotCommandScopeChat, 
+    BotCommandScopeAllPrivateChats, 
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -109,7 +114,6 @@ def format_summary(status_header, checker, total, app, dec, err, start_time, tie
     speed = processed / elapsed if elapsed > 0 else 0
     hit_rate = round((app / processed * 100), 2) if processed > 0 else 0
     
-    # Using <code> wrapper makes the entire block tap-to-copy!
     return f"""<code>╭━━━━━━━━━━━━━━━━━━━━━╮ &lt;/&gt;
 🏁 {checker.upper()} — {status_header}
 ╰━━━━━━━━━━━━━━━━━━━━━╯
@@ -149,11 +153,14 @@ def format_single_hit(status, checker, result, cc, country, flag, bank, brand, c
     elif status == "DECLINED": header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
     else: header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
     
+    # HTML Escape the result to prevent Telegram parsing crashes
+    safe_result = html.escape(str(result))
+    
     return f"""<b>{header}</b>
 
 <b>𝗖𝗖 ⇾</b> <code>{cc}</code>
 <b>𝗚𝗮𝘁𝗲𝘄𝗮𝘆 ⇾</b> {checker}
-<b>𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 ⇾</b> <code>{result}</code>
+<b>𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 ⇾</b> <code>{safe_result}</code>
 <b>𝗕𝗜𝗡 ⇾</b> {brand} — {c_type.upper()}
 <b>𝗕𝗮𝗻𝗸 ⇾</b> {bank} | {country} {flag}
 
@@ -392,8 +399,6 @@ async def process_checker(message: Message, text: str, checker: str):
             elapsed = time.time() - start_time
             
             # --- 3. HANDLE SINGLE HIT OUTPUT ---
-            # If it's a mass check and it HITS, send a dedicated message so they don't lose it.
-            # If it's a single check, ALWAYS update the main message with the result.
             if status in ["APPROVED", "CHARGED", "LIVE"] or not is_mass:
                 hit_text = format_single_hit(status, checker, resp, cc, country, flag, bank, brand, c_type, elapsed, tier, username)
                 
@@ -494,10 +499,8 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="users", description="[ADMIN] View bot stats"),
     ]
     
-    # 1. Set default for everyone
     await bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
-    # 2. Push hidden commands only to admins
     for admin_id in ADMIN_IDS:
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
@@ -506,7 +509,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - PREMIUM DESIGN UI ACTIVE")
+    print("BEAR OS PRO DEPLOYED - CRASH FIX APPLIED")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
