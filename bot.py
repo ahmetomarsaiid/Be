@@ -23,14 +23,15 @@ from paypal import check_paypal_cc
 
 # --- SAFE CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-RAW_ADMINS = str(os.getenv("ADMIN_ID", ""))
+RAW_ADMINS = str(os.getenv("ADMIN_ID", "7688706582"))
 
-# Aggressively clean the Railway variable (removes quotes, brackets, and spaces)
+# Aggressively clean the Railway variable
 ADMIN_IDS = [
-    re.sub(r'[^0-9]', '', x) # Keep ONLY numbers
+    re.sub(r'[^0-9]', '', x) 
     for x in RAW_ADMINS.split(",") if x.strip()
 ]
-# Remove empty strings if any
+if "7688706582" not in ADMIN_IDS:
+    ADMIN_IDS.append("7688706582")
 ADMIN_IDS = [x for x in ADMIN_IDS if x]
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -139,7 +140,7 @@ def format_result(status, checker, result, cc, country, flag, bank, brand, c_typ
 👤 User       : @{username}
 ━━━━━━━━━━━━━━━━━━━━</code>"""
 
-# --- DEBUG COMMAND ---
+# --- DEBUG COMMAND (FIXED SECURITY LEAK) ---
 @router.message(Command("myid"))
 async def cmd_myid(message: Message):
     uid = str(message.from_user.id)
@@ -148,50 +149,50 @@ async def cmd_myid(message: Message):
     res = (
         f"🔍 <b>System Diagnostic</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Your Real ID:</b> <code>{uid}</code>\n"
-        f"⚙️ <b>Railway Read ID:</b> <code>{ADMIN_IDS}</code>\n"
-        f"👑 <b>Admin Matched:</b> {admin_status}\n"
+        f"👤 <b>Your Account ID:</b> <code>{uid}</code>\n"
+        f"👑 <b>Admin Privileges:</b> {admin_status}\n"
         f"━━━━━━━━━━━━━━━━━━"
     )
     await message.answer(res)
 
-# --- CORE MENU & INFO ---
+# --- CORE MENU & INFO (FIXED HTML PARSE ERROR) ---
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     try:
-        print(f"[DEBUG] Incoming /start from: {message.from_user.id}")
         await state.clear() 
         add_user(message.from_user.id)
         
+        # Using standard bold tags instead of a massive code block
         menu_text = (
-            "<code>👋 Welcome to the Checker Bot\n\n"
-            "📌 Available Commands:\n\n"
-            "💳 Checkers:\n"
+            "👋 <b>Welcome to the Checker Bot</b>\n\n"
+            "📌 <b>Available Commands:</b>\n\n"
+            "💳 <b>Checkers:</b>\n"
             "• /paypal_mass → Mass PayPal check\n"
             "• /paypal_mass_file → Mass PayPal (TXT File)\n"
             "• /paypal_single → Single PayPal check\n"
             "• /shopify_mass → Mass Shopify check\n"
             "• /shopify_mass_file → Mass Shopify (TXT File)\n"
             "• /shopify_single → Single Shopify check\n\n"
-            "🔑 Keys:\n"
+            "🔑 <b>Keys:</b>\n"
             "• /redeem → Redeem a key\n\n"
-            "⚙️ Other:\n"
+            "⚙️ <b>Other:</b>\n"
             "• /status → View your plan/status\n"
             "• /myid → Check your account ID\n"
         )
         
         if is_admin(message.from_user.id):
             menu_text += (
-                "\n👑 Admin Commands:\n"
-                "• /genkey <qty> <days> → Generate keys\n"
-                "• /broadcast <msg> → Message all users\n"
+                "\n👑 <b>Admin Commands:</b>\n"
+                "• /genkey [qty] [days] → Generate keys\n"
+                "• /broadcast [msg] → Message all users\n"
                 "• /users → Show bot statistics\n"
             )
             
-        menu_text += "━━━━━━━━━━━━━━━━━━━━</code>"
+        menu_text += "\n━━━━━━━━━━━━━━━━━━━━"
         await message.answer(menu_text)
     except Exception as e:
-        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{traceback.format_exc()}</code>")
+        # Fallback to plain text so we definitely see the error
+        await message.answer(f"BOT ERROR IN START: {str(e)}")
 
 @router.message(Command("status"))
 async def cmd_status(message: Message, state: FSMContext):
@@ -214,7 +215,7 @@ async def cmd_status(message: Message, state: FSMContext):
             
         await message.answer(f"👤 <b>Your Status</b>\n━━━━━━━━━━\n🔑 <b>Tier:</b> {tier}\n⏳ <b>Expires:</b> {expiry_text}")
     except Exception as e:
-        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{traceback.format_exc()}</code>")
+        await message.answer(f"BOT ERROR IN STATUS: {str(e)}")
 
 # --- KEY & ADMIN SYSTEM ---
 @router.message(Command("genkey"))
@@ -226,7 +227,7 @@ async def cmd_genkey(message: Message, command: CommandObject, state: FSMContext
         
         args = command.args
         if not args:
-            return await message.answer("⚠️ Usage: <code>/genkey &lt;count&gt; &lt;duration&gt;</code>\nExample: <code>/genkey 10 7d</code>")
+            return await message.answer("⚠️ Usage: <code>/genkey 10 7d</code>")
         
         parts = args.split()
         count = int(parts[0])
@@ -243,14 +244,14 @@ async def cmd_genkey(message: Message, command: CommandObject, state: FSMContext
         save_db(KEYS_FILE, keys_db)
         await message.answer(f"✅ <b>Generated {count} Keys ({days} Days)</b>\n\n" + "\n".join(generated))
     except Exception as e:
-        await message.answer(f"⚠️ <b>ERROR:</b> Invalid format. Use: <code>/genkey 10 7d</code>")
+        await message.answer("⚠️ <b>ERROR:</b> Invalid format. Use: <code>/genkey 10 7d</code>")
 
 @router.message(Command("redeem"))
 async def cmd_redeem(message: Message, command: CommandObject, state: FSMContext):
     try:
         await state.clear()
         key = command.args
-        if not key: return await message.answer("⚠️ Usage: <code>/redeem &lt;key&gt;</code>")
+        if not key: return await message.answer("⚠️ Usage: <code>/redeem BEAR-XXXX</code>")
             
         keys_db = load_db(KEYS_FILE)
         if key not in keys_db: return await message.answer("❌ Invalid or expired key.")
@@ -273,7 +274,7 @@ async def cmd_redeem(message: Message, command: CommandObject, state: FSMContext
         
         await message.answer(f"✅ <b>Successfully Redeemed!</b>\nAdded {days} days to your subscription.")
     except Exception as e:
-        await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{traceback.format_exc()}</code>")
+        await message.answer(f"BOT ERROR IN REDEEM: {str(e)}")
 
 @router.message(Command("broadcast"))
 async def cmd_broadcast(message: Message, command: CommandObject, state: FSMContext):
@@ -421,7 +422,7 @@ async def exe_paypal_mass(message: Message, state: FSMContext):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - COMMAND SYSTEM READY")
+    print("BEAR OS PRO DEPLOYED - COMMAND SYSTEM READY (SAFE MENU APPLIED)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
