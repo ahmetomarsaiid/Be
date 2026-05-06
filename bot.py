@@ -503,7 +503,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - CHECKER ONLY MODE (SYNTAX FIXED)")
+    print("BEAR OS PRO DEPLOYED - FULLY REPAIRED")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
