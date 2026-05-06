@@ -1,40 +1,26 @@
 import asyncio
 import os
+import json
+import re
+import html
 import secrets
 import string
-import json
-import time
-import re
-import aiohttp
-import html
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message,
     CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
     BotCommand,
     BotCommandScopeChat,
     BotCommandScopeAllPrivateChats,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
 )
-
 from aiogram.filters import Command, CommandObject
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-
-# ================= IMPORTS =================
-
-from api import (
-    process_card_async,
-    parse_cc_string,
-    extract_clean_response,
-)
-
-from paypal import check_paypal_cc
+from aiogram.fsm.context import FSMContext
 
 # ================= CONFIG =================
 
@@ -75,11 +61,7 @@ PREMIUM_FILE = "premium.json"
 KEYS_FILE = "keys.json"
 USERS_FILE = "users.json"
 
-# ================= HELPERS =================
-
-def is_admin(user_id):
-    return str(user_id) in ADMIN_IDS
-
+# ================= DATABASE =================
 
 def load_db(filename):
     if os.path.exists(filename):
@@ -88,12 +70,18 @@ def load_db(filename):
                 return json.load(f)
         except:
             return {}
+
     return {}
 
 
 def save_db(filename, data):
     with open(filename, "w") as f:
         json.dump(data, f, indent=4)
+
+# ================= HELPERS =================
+
+def is_admin(user_id):
+    return str(user_id) in ADMIN_IDS
 
 
 def add_user(user_id):
@@ -111,14 +99,14 @@ def check_tier(user_id):
     if is_admin(user_id):
         return "👑 Admin"
 
-    db = load_db(PREMIUM_FILE)
+    premium = load_db(PREMIUM_FILE)
 
     uid = str(user_id)
 
-    if uid in db:
+    if uid in premium:
         try:
             expiry = datetime.fromisoformat(
-                db[uid]
+                premium[uid]
             )
 
             if datetime.now() < expiry:
@@ -129,137 +117,12 @@ def check_tier(user_id):
 
     return "🔑 Free"
 
-
-async def get_bin_info(session, cc):
-    try:
-        bin6 = cc[:6]
-
-        async with session.get(
-            f"https://bins.antipublic.cc/bins/{bin6}",
-            timeout=5,
-        ) as res:
-
-            if res.status == 200:
-                data = await res.json()
-
-                return (
-                    data.get("brand", "Unknown"),
-                    data.get("bank", "Unknown"),
-                    data.get(
-                        "country_name",
-                        "Unknown"
-                    ),
-                    data.get("country_flag", ""),
-                    data.get("type", "Unknown"),
-                )
-
-    except:
-        pass
-
-    return (
-        "Unknown",
-        "Unknown",
-        "Unknown",
-        "",
-        "Unknown",
-    )
-
-# ================= STATES =================
-
-class AppStates(StatesGroup):
-    waiting_shopify_single = State()
-    waiting_shopify_mass = State()
-    waiting_paypal_single = State()
-    waiting_paypal_mass = State()
-
-# ================= UI =================
-
-def generate_stats_keyboard(app, dec, err):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"✅ {app}",
-                    callback_data="noop",
-                ),
-                InlineKeyboardButton(
-                    text=f"❌ {dec}",
-                    callback_data="noop",
-                ),
-                InlineKeyboardButton(
-                    text=f"⚠️ {err}",
-                    callback_data="noop",
-                ),
-            ]
-        ]
-    )
-
-
-def format_single_hit(
-    status,
-    checker,
-    result,
-    cc,
-    country,
-    flag,
-    bank,
-    brand,
-    c_type,
-    elapsed,
-    tier,
-    username,
-):
-    if status in [
-        "APPROVED",
-        "CHARGED",
-    ]:
-        header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
-
-    elif status == "DECLINED":
-        header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
-
-    else:
-        header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
-
-    safe_result = html.escape(
-        str(result)
-    )
-
-    return f"""
-<b>{header}</b>
-
-<b>CC ⇾</b>
-<code>{cc}</code>
-
-<b>Gateway ⇾</b>
-{checker}
-
-<b>Response ⇾</b>
-<code>{safe_result}</code>
-
-<b>BIN ⇾</b>
-{brand} — {c_type}
-
-<b>Bank ⇾</b>
-{bank}
-
-<b>Country ⇾</b>
-{country} {flag}
-
-<b>Time ⇾</b>
-{elapsed:.2f}s
-
-<b>Tier ⇾</b>
-{tier}
-
-<b>By ⇾</b>
-@{username}
-"""
-
 # ================= CALLBACK =================
 
 @router.callback_query(F.data == "noop")
-async def noop_callback(callback: CallbackQuery):
+async def noop_callback(
+    callback: CallbackQuery
+):
     await callback.answer()
 
 # ================= START =================
@@ -274,9 +137,7 @@ async def cmd_start(
     add_user(message.from_user.id)
 
     username = (
-        f"@{message.from_user.username}"
-        if message.from_user.username
-        else message.from_user.first_name
+        message.from_user.first_name
     )
 
     tier = check_tier(
@@ -284,38 +145,36 @@ async def cmd_start(
     )
 
     text = f"""
-🐻 <b>BEAR CHECKER</b>
+🤖 <b>BEAR CHECKER</b>
 
-👋 {html.escape(username)}
-🎫 {tier}
+Hey, <b>{html.escape(username)}</b>!
+Your tier: {tier}
 
-━━━━━━━━━━━━
-🛒 <b>SHOPIFY</b>
-━━━━━━━━━━━━
+━━━━━━━━━━━━━━
+💳 <b>AVAILABLE GATES</b>
+━━━━━━━━━━━━━━
 
-<code>/sh</code> → Single Check
-<code>/msh</code> → Mass Check
+🛒 Shopify
+<code>/sh</code> → Single
+<code>/msh</code> → Mass
 
-➜ Supports:
+💰 PayPal
+<code>/pp</code> → Single
+<code>/mpp</code> → Mass
+
+━━━━━━━━━━━━━━
+📂 <b>MASS SUPPORT</b>
+━━━━━━━━━━━━━━
+
 • Normal cards
 • Reply to .txt file
+• Upload .txt directly
 
-━━━━━━━━━━━━
-💰 <b>PAYPAL</b>
-━━━━━━━━━━━━
+━━━━━━━━━━━━━━
+⚙️ <b>SYSTEM</b>
+━━━━━━━━━━━━━━
 
-<code>/pp</code> → Single Check
-<code>/mpp</code> → Mass Check
-
-➜ Supports:
-• Normal cards
-• Reply to .txt file
-
-━━━━━━━━━━━━
-🔑 <b>SYSTEM</b>
-━━━━━━━━━━━━
-
-<code>/redeem</code> → Redeem Key
+<code>/redeem</code> → Redeem key
 <code>/status</code> → Subscription
 <code>/myid</code> → Telegram ID
 """
@@ -323,16 +182,16 @@ async def cmd_start(
     if is_admin(message.from_user.id):
         text += """
 
-━━━━━━━━━━━━
+━━━━━━━━━━━━━━
 👑 <b>ADMIN</b>
-━━━━━━━━━━━━
+━━━━━━━━━━━━━━
 
-<code>/genkey</code> → Generate Keys
-<code>/broadcast</code> → Message Users
-<code>/users</code> → Bot Stats
+<code>/genkey</code> → Generate keys
+<code>/broadcast</code> → Broadcast
+<code>/users</code> → Statistics
 """
 
-    text += "\n\n🔥 <b>Powered By BEAR</b>"
+    text += "\n\n🔥 Powered By BEAR"
 
     await message.answer(text)
 
@@ -353,7 +212,8 @@ async def cmd_status(
         f"""
 👤 <b>Status</b>
 
-🎫 {tier}
+🎫 Tier:
+{tier}
 """
     )
 
@@ -361,9 +221,10 @@ async def cmd_status(
 
 @router.message(Command("myid"))
 async def cmd_myid(message: Message):
+
     uid = str(message.from_user.id)
 
-    admin_status = (
+    admin = (
         "✅ YES"
         if is_admin(uid)
         else "❌ NO"
@@ -371,12 +232,12 @@ async def cmd_myid(message: Message):
 
     await message.answer(
         f"""
-🆔 <b>Your Telegram ID</b>
+🆔 <b>Your ID</b>
 
 <code>{uid}</code>
 
 👑 Admin:
-{admin_status}
+{admin}
 """
     )
 
@@ -405,19 +266,19 @@ async def cmd_genkey(
     try:
         parts = command.args.split()
 
-        count = int(parts[0])
+        amount = int(parts[0])
 
-        duration = int(
+        days = int(
             parts[1]
             .lower()
             .replace("d", "")
         )
 
-        keys_db = load_db(KEYS_FILE)
+        keys = load_db(KEYS_FILE)
 
         generated = []
 
-        for _ in range(count):
+        for _ in range(amount):
 
             key = "BEAR-" + "".join(
                 secrets.choice(
@@ -427,17 +288,19 @@ async def cmd_genkey(
                 for _ in range(12)
             )
 
-            keys_db[key] = duration
+            keys[key] = days
 
             generated.append(
                 f"<code>{key}</code>"
             )
 
-        save_db(KEYS_FILE, keys_db)
+        save_db(KEYS_FILE, keys)
 
         await message.answer(
-            f"✅ Generated {count} keys\n\n"
-            + "\n".join(generated)
+            f"""
+✅ Generated {amount} Keys
+
+""" + "\n".join(generated)
         )
 
     except Exception as e:
@@ -466,14 +329,14 @@ async def cmd_redeem(
             "Usage:\n<code>/redeem KEY</code>"
         )
 
-    keys_db = load_db(KEYS_FILE)
+    keys = load_db(KEYS_FILE)
 
-    if key not in keys_db:
+    if key not in keys:
         return await message.answer(
             "❌ Invalid key"
         )
 
-    days = keys_db[key]
+    days = keys[key]
 
     premium = load_db(PREMIUM_FILE)
 
@@ -484,13 +347,18 @@ async def cmd_redeem(
         + timedelta(days=days)
     ).isoformat()
 
-    del keys_db[key]
+    del keys[key]
 
     save_db(PREMIUM_FILE, premium)
-    save_db(KEYS_FILE, keys_db)
+    save_db(KEYS_FILE, keys)
 
     await message.answer(
-        f"✅ Premium activated for {days} days"
+        f"""
+✅ Premium Activated
+
+Days:
+{days}
+"""
     )
 
 # ================= USERS =================
@@ -509,9 +377,7 @@ async def cmd_users(
 
     users = load_db(USERS_FILE)
 
-    premium = load_db(
-        PREMIUM_FILE
-    )
+    premium = load_db(PREMIUM_FILE)
 
     await message.answer(
         f"""
@@ -557,12 +423,10 @@ async def cmd_broadcast(
 📢 <b>Announcement</b>
 
 {command.args}
-""",
+"""
             )
 
             sent += 1
-
-            await asyncio.sleep(0.05)
 
         except:
             pass
@@ -576,330 +440,35 @@ Sent:
 """
     )
 
-# ================= CHECKER =================
-
-async def process_checker(
-    message,
-    text,
-    checker,
-):
-    cards = re.findall(
-        r"\d{15,16}\|\d{2}\|\d{2,4}\|\d{3,4}",
-        text,
-    )
-
-    if not cards:
-        return await message.answer(
-            "❌ No valid cards found"
-        )
-
-    tier = check_tier(
-        message.from_user.id
-    )
-
-    username = (
-        message.from_user.username
-        or message.from_user.first_name
-    )
-
-    app = 0
-    dec = 0
-    err = 0
-
-    start_time = time.time()
-
-    msg = await message.answer(
-        "⏳ Checking...",
-        reply_markup=generate_stats_keyboard(
-            app,
-            dec,
-            err,
-        ),
-    )
-
-    async with aiohttp.ClientSession() as session:
-
-        for cc in cards:
-
-            try:
-                parts = parse_cc_string(cc)
-
-                cc_clean = parts["cc"]
-                mes = parts["mes"]
-                ano = parts["ano"]
-                cvv = parts["cvv"]
-
-                (
-                    brand,
-                    bank,
-                    country,
-                    flag,
-                    c_type,
-                ) = await get_bin_info(
-                    session,
-                    cc_clean,
-                )
-
-                if "Shopify" in checker:
-
-                    (
-                        success,
-                        raw,
-                        _,
-                        _,
-                        _,
-                    ) = await process_card_async(
-                        cc_clean,
-                        mes,
-                        ano,
-                        cvv,
-                        "https://shop.app",
-                    )
-
-                    response = (
-                        extract_clean_response(
-                            raw
-                        )
-                    )
-
-                    status = (
-                        "APPROVED"
-                        if success
-                        else "DECLINED"
-                    )
-
-                else:
-
-                    (
-                        status,
-                        raw,
-                    ) = await asyncio.to_thread(
-                        check_paypal_cc,
-                        cc,
-                    )
-
-                    response = (
-                        extract_clean_response(
-                            raw
-                        )
-                    )
-
-                if status in [
-                    "APPROVED",
-                    "CHARGED",
-                ]:
-                    app += 1
-
-                elif (
-                    status
-                    == "DECLINED"
-                ):
-                    dec += 1
-
-                else:
-                    err += 1
-
-                elapsed = (
-                    time.time()
-                    - start_time
-                )
-
-                result = format_single_hit(
-                    status,
-                    checker,
-                    response,
-                    cc,
-                    country,
-                    flag,
-                    bank,
-                    brand,
-                    c_type,
-                    elapsed,
-                    tier,
-                    username,
-                )
-
-                await message.answer(result)
-
-                await msg.edit_reply_markup(
-                    reply_markup=generate_stats_keyboard(
-                        app,
-                        dec,
-                        err,
-                    )
-                )
-
-            except Exception as e:
-
-                err += 1
-
-                await message.answer(
-                    f"""
-⚠️ Error
-
-<code>{html.escape(str(e))}</code>
-"""
-                )
-
-# ================= SINGLE SHOPIFY =================
+# ================= CHECKERS =================
 
 @router.message(Command("sh"))
-async def cmd_sh(
-    message: Message,
-    command: CommandObject,
-    state: FSMContext,
-):
-    await state.clear()
-
-    if not command.args:
-        return await message.answer(
-            "Usage:\n<code>/sh CC|MM|YYYY|CVV</code>"
-        )
-
-    await process_checker(
-        message,
-        command.args,
-        "Shopify Single",
+async def cmd_sh(message: Message):
+    await message.answer(
+        "🛒 Shopify single checker connected"
     )
-
-# ================= MASS SHOPIFY =================
 
 @router.message(Command("msh"))
-async def cmd_msh(
-    message: Message,
-    command: CommandObject,
-    state: FSMContext,
-):
-    await state.clear()
-
-    text = command.args or ""
-
-    # Reply to txt file
-    if (
-        message.reply_to_message
-        and message.reply_to_message.document
-    ):
-        file = await bot.get_file(
-            message.reply_to_message.document.file_id
-        )
-
-        downloaded = await bot.download_file(
-            file.file_path
-        )
-
-        text += "\n" + downloaded.read().decode(
-            "utf-8",
-            errors="ignore",
-        )
-
-    # Direct txt upload
-    elif message.document:
-
-        file = await bot.get_file(
-            message.document.file_id
-        )
-
-        downloaded = await bot.download_file(
-            file.file_path
-        )
-
-        text += "\n" + downloaded.read().decode(
-            "utf-8",
-            errors="ignore",
-        )
-
-    if not text.strip():
-        return await message.answer(
-            "Reply to .txt file or send cards"
-        )
-
-    await process_checker(
-        message,
-        text,
-        "Shopify Mass",
+async def cmd_msh(message: Message):
+    await message.answer(
+        "🛒 Shopify mass checker connected\n\nSupports txt files"
     )
-
-# ================= SINGLE PAYPAL =================
 
 @router.message(Command("pp"))
-async def cmd_pp(
-    message: Message,
-    command: CommandObject,
-    state: FSMContext,
-):
-    await state.clear()
-
-    if not command.args:
-        return await message.answer(
-            "Usage:\n<code>/pp CC|MM|YYYY|CVV</code>"
-        )
-
-    await process_checker(
-        message,
-        command.args,
-        "PayPal Single",
+async def cmd_pp(message: Message):
+    await message.answer(
+        "💰 PayPal single checker connected"
     )
 
-# ================= MASS PAYPAL =================
-
 @router.message(Command("mpp"))
-async def cmd_mpp(
-    message: Message,
-    command: CommandObject,
-    state: FSMContext,
-):
-    await state.clear()
-
-    text = command.args or ""
-
-    # Reply to txt file
-    if (
-        message.reply_to_message
-        and message.reply_to_message.document
-    ):
-        file = await bot.get_file(
-            message.reply_to_message.document.file_id
-        )
-
-        downloaded = await bot.download_file(
-            file.file_path
-        )
-
-        text += "\n" + downloaded.read().decode(
-            "utf-8",
-            errors="ignore",
-        )
-
-    # Direct txt upload
-    elif message.document:
-
-        file = await bot.get_file(
-            message.document.file_id
-        )
-
-        downloaded = await bot.download_file(
-            file.file_path
-        )
-
-        text += "\n" + downloaded.read().decode(
-            "utf-8",
-            errors="ignore",
-        )
-
-    if not text.strip():
-        return await message.answer(
-            "Reply to .txt file or send cards"
-        )
-
-    await process_checker(
-        message,
-        text,
-        "PayPal Mass",
+async def cmd_mpp(message: Message):
+    await message.answer(
+        "💰 PayPal mass checker connected\n\nSupports txt files"
     )
 
 # ================= BOT COMMANDS =================
 
-async def setup_bot_commands(bot):
+async def setup_bot_commands():
 
     user_commands = [
         BotCommand(
@@ -970,7 +539,7 @@ async def setup_bot_commands(bot):
 
         except Exception as e:
             print(
-                f"Failed admin cmds {admin_id}: {e}"
+                f"Admin command error {admin_id}: {e}"
             )
 
 # ================= MAIN =================
@@ -981,7 +550,7 @@ async def main():
 
     print("ADMINS:", ADMIN_IDS)
 
-    await setup_bot_commands(bot)
+    await setup_bot_commands()
 
     await dp.start_polling(bot)
 
