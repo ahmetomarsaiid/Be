@@ -25,14 +25,23 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
-# --- BACKEND IMPORTS ---
-from api import process_card_async, parse_cc_string, extract_clean_response
+# ================= IMPORTS =================
+
+from api import (
+    process_card_async,
+    parse_cc_string,
+    extract_clean_response,
+)
+
 from paypal import check_paypal_cc
 
 # ================= CONFIG =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-RAW_ADMINS = str(os.getenv("ADMIN_ID", "7688706582"))
+
+RAW_ADMINS = str(
+    os.getenv("ADMIN_ID", "7688706582")
+)
 
 ADMIN_IDS = [
     re.sub(r"[^0-9]", "", x)
@@ -43,17 +52,20 @@ ADMIN_IDS = [
 ADMIN_IDS = [x for x in ADMIN_IDS if x]
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is missing")
+    raise ValueError("BOT_TOKEN missing")
 
 # ================= BOT =================
 
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    default=DefaultBotProperties(
+        parse_mode=ParseMode.HTML
+    )
 )
 
 dp = Dispatcher()
 router = Router()
+
 dp.include_router(router)
 
 # ================= FILES =================
@@ -87,7 +99,10 @@ def add_user(user_id):
     users = load_db(USERS_FILE)
 
     if str(user_id) not in users:
-        users[str(user_id)] = datetime.now().isoformat()
+        users[str(user_id)] = (
+            datetime.now().isoformat()
+        )
+
         save_db(USERS_FILE, users)
 
 
@@ -96,11 +111,14 @@ def check_tier(user_id):
         return "👑 Admin"
 
     db = load_db(PREMIUM_FILE)
+
     uid = str(user_id)
 
     if uid in db:
         try:
-            expiry = datetime.fromisoformat(db[uid])
+            expiry = datetime.fromisoformat(
+                db[uid]
+            )
 
             if datetime.now() < expiry:
                 return "💎 Premium"
@@ -117,7 +135,7 @@ async def get_bin_info(session, cc):
 
         async with session.get(
             f"https://bins.antipublic.cc/bins/{bin6}",
-            timeout=5
+            timeout=5,
         ) as res:
 
             if res.status == 200:
@@ -126,7 +144,10 @@ async def get_bin_info(session, cc):
                 return (
                     data.get("brand", "Unknown"),
                     data.get("bank", "Unknown"),
-                    data.get("country_name", "Unknown"),
+                    data.get(
+                        "country_name",
+                        "Unknown"
+                    ),
                     data.get("country_flag", ""),
                     data.get("type", "Unknown"),
                 )
@@ -134,7 +155,13 @@ async def get_bin_info(session, cc):
     except:
         pass
 
-    return "Unknown", "Unknown", "Unknown", "", "Unknown"
+    return (
+        "Unknown",
+        "Unknown",
+        "Unknown",
+        "",
+        "Unknown",
+    )
 
 # ================= STATES =================
 
@@ -152,15 +179,15 @@ def generate_stats_keyboard(app, dec, err):
             [
                 InlineKeyboardButton(
                     text=f"✅ {app}",
-                    callback_data="noop"
+                    callback_data="noop",
                 ),
                 InlineKeyboardButton(
                     text=f"❌ {dec}",
-                    callback_data="noop"
+                    callback_data="noop",
                 ),
                 InlineKeyboardButton(
                     text=f"⚠️ {err}",
-                    callback_data="noop"
+                    callback_data="noop",
                 ),
             ]
         ]
@@ -179,33 +206,54 @@ def format_single_hit(
     c_type,
     elapsed,
     tier,
-    username
+    username,
 ):
-    if status in ["APPROVED", "CHARGED"]:
+    if status in [
+        "APPROVED",
+        "CHARGED",
+    ]:
         header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
+
     elif status == "DECLINED":
         header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
+
     else:
         header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
 
-    safe_result = html.escape(str(result))
+    safe_result = html.escape(
+        str(result)
+    )
 
     return f"""
 <b>{header}</b>
 
-<b>𝗖𝗖 ⇾</b> <code>{cc}</code>
-<b>𝗚𝗮𝘁𝗲𝘄𝗮𝘆 ⇾</b> {checker}
-<b>𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 ⇾</b> <code>{safe_result}</code>
+<b>𝗖𝗖 ⇾</b>
+<code>{cc}</code>
 
-<b>𝗕𝗜𝗡 ⇾</b> {brand} — {c_type}
-<b>𝗕𝗮𝗻𝗸 ⇾</b> {bank}
-<b>𝗖𝗼𝘂𝗻𝘁𝗿𝘆 ⇾</b> {country} {flag}
+<b>𝗚𝗮𝘁𝗲𝘄𝗮𝘆 ⇾</b>
+{checker}
 
-<b>𝗧𝗶𝗺𝗲 ⇾</b> {elapsed:.2f}s
-<b>𝗧𝗶𝗲𝗿 ⇾</b> {tier}
-<b>𝗕𝘆 ⇾</b> @{username}
+<b>𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 ⇾</b>
+<code>{safe_result}</code>
+
+<b>𝗕𝗜𝗡 ⇾</b>
+{brand} — {c_type}
+
+<b>𝗕𝗮𝗻𝗸 ⇾</b>
+{bank}
+
+<b>𝗖𝗼𝘂𝗻𝘁𝗿𝘆 ⇾</b>
+{country} {flag}
+
+<b>𝗧𝗶𝗺𝗲 ⇾</b>
+{elapsed:.2f}s
+
+<b>𝗧𝗶𝗲𝗿 ⇾</b>
+{tier}
+
+<b>𝗕𝘆 ⇾</b>
+@{username}
 """
-
 
 # ================= CALLBACK =================
 
@@ -216,34 +264,109 @@ async def noop_callback(callback: CallbackQuery):
 # ================= START =================
 
 @router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(
+    message: Message,
+    state: FSMContext,
+):
     await state.clear()
 
     add_user(message.from_user.id)
 
-    text = """
-👋 <b>Welcome</b>
+    username = (
+        f"@{message.from_user.username}"
+        if message.from_user.username
+        else message.from_user.first_name
+    )
 
-💳 <b>Commands</b>
+    tier = check_tier(
+        message.from_user.id
+    )
 
-• /pp CC|MM|YYYY|CVV
-• /mpp
-• /sh CC|MM|YYYY|CVV
-• /msh
+    text = f"""
+╔════════════════════╗
+      🐻 BEAR CHECKER
+╚════════════════════╝
 
-🔑 /redeem
-📊 /status
-🆔 /myid
+👋 <b>Welcome {html.escape(username)}</b>
+
+🎫 <b>Your Tier:</b> {tier}
+
+━━━━━━━━━━━━━━━━━━
+🛒 <b>SHOPIFY COMMANDS</b>
+━━━━━━━━━━━━━━━━━━
+
+<b>/sh</b>
+➜ Single Shopify Check
+
+<code>/sh CC|MM|YYYY|CVV</code>
+
+<b>/msh</b>
+➜ Mass Shopify Check
+
+<code>/msh CC1|MM|YYYY|CVV
+CC2|MM|YYYY|CVV</code>
+
+━━━━━━━━━━━━━━━━━━
+💰 <b>PAYPAL COMMANDS</b>
+━━━━━━━━━━━━━━━━━━
+
+<b>/pp</b>
+➜ Single PayPal Check
+
+<code>/pp CC|MM|YYYY|CVV</code>
+
+<b>/mpp</b>
+➜ Mass PayPal Check
+
+<code>/mpp CC1|MM|YYYY|CVV
+CC2|MM|YYYY|CVV</code>
+
+━━━━━━━━━━━━━━━━━━
+🔑 <b>PREMIUM / KEYS</b>
+━━━━━━━━━━━━━━━━━━
+
+<b>/redeem</b>
+➜ Redeem Premium Key
+
+<code>/redeem BEAR-XXXX</code>
+
+━━━━━━━━━━━━━━━━━━
+⚙️ <b>SYSTEM COMMANDS</b>
+━━━━━━━━━━━━━━━━━━
+
+<b>/status</b>
+➜ View Subscription Status
+
+<b>/myid</b>
+➜ View Telegram Account ID
 """
 
     if is_admin(message.from_user.id):
         text += """
 
-👑 <b>Admin</b>
+━━━━━━━━━━━━━━━━━━
+👑 <b>ADMIN COMMANDS</b>
+━━━━━━━━━━━━━━━━━━
 
-• /genkey
-• /broadcast
-• /users
+<b>/genkey</b>
+➜ Generate Premium Keys
+
+<code>/genkey 10 7d</code>
+
+<b>/broadcast</b>
+➜ Send Message To All Users
+
+<code>/broadcast Hello Users</code>
+
+<b>/users</b>
+➜ View Bot Statistics
+"""
+
+    text += """
+
+━━━━━━━━━━━━━━━━━━
+🔥 POWERED BY BEAR
+━━━━━━━━━━━━━━━━━━
 """
 
     await message.answer(text)
@@ -251,13 +374,23 @@ async def cmd_start(message: Message, state: FSMContext):
 # ================= STATUS =================
 
 @router.message(Command("status"))
-async def cmd_status(message: Message, state: FSMContext):
+async def cmd_status(
+    message: Message,
+    state: FSMContext,
+):
     await state.clear()
 
-    tier = check_tier(message.from_user.id)
+    tier = check_tier(
+        message.from_user.id
+    )
 
     await message.answer(
-        f"👤 <b>Status</b>\n\n🔑 Tier: {tier}"
+        f"""
+👤 <b>Your Status</b>
+
+🎫 Tier:
+{tier}
+"""
     )
 
 # ================= MYID =================
@@ -266,11 +399,15 @@ async def cmd_status(message: Message, state: FSMContext):
 async def cmd_myid(message: Message):
     uid = str(message.from_user.id)
 
-    admin_status = "✅ YES" if is_admin(uid) else "❌ NO"
+    admin_status = (
+        "✅ YES"
+        if is_admin(uid)
+        else "❌ NO"
+    )
 
     await message.answer(
         f"""
-🆔 <b>Your ID</b>
+🆔 <b>Your Telegram ID</b>
 
 <code>{uid}</code>
 
@@ -285,12 +422,16 @@ async def cmd_myid(message: Message):
 async def cmd_genkey(
     message: Message,
     command: CommandObject,
-    state: FSMContext
+    state: FSMContext,
 ):
     await state.clear()
 
-    if not is_admin(message.from_user.id):
-        return await message.answer("❌ Admin only")
+    if not is_admin(
+        message.from_user.id
+    ):
+        return await message.answer(
+            "❌ Admin only"
+        )
 
     if not command.args:
         return await message.answer(
@@ -302,36 +443,48 @@ async def cmd_genkey(
 
         count = int(parts[0])
 
-        duration_str = parts[1].lower()
-
-        days = int(duration_str.replace("d", ""))
+        duration = int(
+            parts[1]
+            .lower()
+            .replace("d", "")
+        )
 
         keys_db = load_db(KEYS_FILE)
 
         generated = []
 
         for _ in range(count):
+
             key = "BEAR-" + "".join(
                 secrets.choice(
-                    string.ascii_uppercase + string.digits
+                    string.ascii_uppercase
+                    + string.digits
                 )
                 for _ in range(12)
             )
 
-            keys_db[key] = days
+            keys_db[key] = duration
 
-            generated.append(f"<code>{key}</code>")
+            generated.append(
+                f"<code>{key}</code>"
+            )
 
         save_db(KEYS_FILE, keys_db)
 
         await message.answer(
-            f"✅ Generated {count} keys\n\n" +
-            "\n".join(generated)
+            f"""
+✅ Generated {count} Keys
+
+""" + "\n".join(generated)
         )
 
     except Exception as e:
         await message.answer(
-            f"❌ Error\n<code>{html.escape(str(e))}</code>"
+            f"""
+❌ Error
+
+<code>{html.escape(str(e))}</code>
+"""
         )
 
 # ================= REDEEM =================
@@ -340,7 +493,7 @@ async def cmd_genkey(
 async def cmd_redeem(
     message: Message,
     command: CommandObject,
-    state: FSMContext
+    state: FSMContext,
 ):
     await state.clear()
 
@@ -354,7 +507,9 @@ async def cmd_redeem(
     keys_db = load_db(KEYS_FILE)
 
     if key not in keys_db:
-        return await message.answer("❌ Invalid key")
+        return await message.answer(
+            "❌ Invalid Key"
+        )
 
     days = keys_db[key]
 
@@ -363,7 +518,8 @@ async def cmd_redeem(
     uid = str(message.from_user.id)
 
     premium[uid] = (
-        datetime.now() + timedelta(days=days)
+        datetime.now()
+        + timedelta(days=days)
     ).isoformat()
 
     del keys_db[key]
@@ -372,27 +528,43 @@ async def cmd_redeem(
     save_db(KEYS_FILE, keys_db)
 
     await message.answer(
-        f"✅ Premium activated for {days} days"
+        f"""
+✅ Premium Activated
+
+Days:
+{days}
+"""
     )
 
 # ================= USERS =================
 
 @router.message(Command("users"))
-async def cmd_users(message: Message, state: FSMContext):
+async def cmd_users(
+    message: Message,
+    state: FSMContext,
+):
     await state.clear()
 
-    if not is_admin(message.from_user.id):
+    if not is_admin(
+        message.from_user.id
+    ):
         return
 
     users = load_db(USERS_FILE)
-    premium = load_db(PREMIUM_FILE)
+
+    premium = load_db(
+        PREMIUM_FILE
+    )
 
     await message.answer(
         f"""
-📊 <b>Stats</b>
+📊 <b>BOT STATS</b>
 
-👥 Users: {len(users)}
-💎 Premium: {len(premium)}
+👥 Users:
+{len(users)}
+
+💎 Premium:
+{len(premium)}
 """
     )
 
@@ -402,16 +574,18 @@ async def cmd_users(message: Message, state: FSMContext):
 async def cmd_broadcast(
     message: Message,
     command: CommandObject,
-    state: FSMContext
+    state: FSMContext,
 ):
     await state.clear()
 
-    if not is_admin(message.from_user.id):
+    if not is_admin(
+        message.from_user.id
+    ):
         return
 
     if not command.args:
         return await message.answer(
-            "Usage:\n<code>/broadcast hello</code>"
+            "Usage:\n<code>/broadcast Hello</code>"
         )
 
     users = load_db(USERS_FILE)
@@ -422,7 +596,11 @@ async def cmd_broadcast(
         try:
             await bot.send_message(
                 uid,
-                f"📢 {command.args}"
+                f"""
+📢 <b>Announcement</b>
+
+{command.args}
+""",
             )
 
             sent += 1
@@ -433,23 +611,34 @@ async def cmd_broadcast(
             pass
 
     await message.answer(
-        f"✅ Sent to {sent}/{len(users)}"
+        f"""
+✅ Broadcast Complete
+
+Sent:
+{sent}/{len(users)}
+"""
     )
 
 # ================= CHECKER =================
 
-async def process_checker(message, text, checker):
-    ccs = re.findall(
+async def process_checker(
+    message,
+    text,
+    checker,
+):
+    cards = re.findall(
         r"\d{15,16}\|\d{2}\|\d{2,4}\|\d{3,4}",
-        text
+        text,
     )
 
-    if not ccs:
+    if not cards:
         return await message.answer(
             "❌ No valid cards found"
         )
 
-    tier = check_tier(message.from_user.id)
+    tier = check_tier(
+        message.from_user.id
+    )
 
     username = (
         message.from_user.username
@@ -467,13 +656,13 @@ async def process_checker(message, text, checker):
         reply_markup=generate_stats_keyboard(
             app,
             dec,
-            err
-        )
+            err,
+        ),
     )
 
     async with aiohttp.ClientSession() as session:
 
-        for cc in ccs:
+        for cc in cards:
 
             try:
                 parts = parse_cc_string(cc)
@@ -483,51 +672,85 @@ async def process_checker(message, text, checker):
                 ano = parts["ano"]
                 cvv = parts["cvv"]
 
-                brand, bank, country, flag, c_type = (
-                    await get_bin_info(session, cc_clean)
+                (
+                    brand,
+                    bank,
+                    country,
+                    flag,
+                    c_type,
+                ) = await get_bin_info(
+                    session,
+                    cc_clean,
                 )
 
                 if "Shopify" in checker:
 
-                    success, raw, _, _, _ = (
-                        await process_card_async(
-                            cc_clean,
-                            mes,
-                            ano,
-                            cvv,
-                            "https://shop.app"
+                    (
+                        success,
+                        raw,
+                        _,
+                        _,
+                        _,
+                    ) = await process_card_async(
+                        cc_clean,
+                        mes,
+                        ano,
+                        cvv,
+                        "https://shop.app",
+                    )
+
+                    response = (
+                        extract_clean_response(
+                            raw
                         )
                     )
 
-                    resp = extract_clean_response(raw)
-
-                    if success:
-                        status = "APPROVED"
-                    else:
-                        status = "DECLINED"
+                    status = (
+                        "APPROVED"
+                        if success
+                        else "DECLINED"
+                    )
 
                 else:
 
-                    status, raw = await asyncio.to_thread(
+                    (
+                        status,
+                        raw,
+                    ) = await asyncio.to_thread(
                         check_paypal_cc,
-                        cc
+                        cc,
                     )
 
-                    resp = extract_clean_response(raw)
+                    response = (
+                        extract_clean_response(
+                            raw
+                        )
+                    )
 
-                if status in ["APPROVED", "CHARGED"]:
+                if status in [
+                    "APPROVED",
+                    "CHARGED",
+                ]:
                     app += 1
-                elif status == "DECLINED":
+
+                elif (
+                    status
+                    == "DECLINED"
+                ):
                     dec += 1
+
                 else:
                     err += 1
 
-                elapsed = time.time() - start_time
+                elapsed = (
+                    time.time()
+                    - start_time
+                )
 
-                result_text = format_single_hit(
+                result = format_single_hit(
                     status,
                     checker,
-                    resp,
+                    response,
                     cc,
                     country,
                     flag,
@@ -536,16 +759,16 @@ async def process_checker(message, text, checker):
                     c_type,
                     elapsed,
                     tier,
-                    username
+                    username,
                 )
 
-                await message.answer(result_text)
+                await message.answer(result)
 
                 await msg.edit_reply_markup(
                     reply_markup=generate_stats_keyboard(
                         app,
                         dec,
-                        err
+                        err,
                     )
                 )
 
@@ -554,16 +777,20 @@ async def process_checker(message, text, checker):
                 err += 1
 
                 await message.answer(
-                    f"⚠️ Error\n<code>{html.escape(str(e))}</code>"
+                    f"""
+⚠️ Error
+
+<code>{html.escape(str(e))}</code>
+"""
                 )
 
-# ================= SHOPIFY =================
+# ================= COMMANDS =================
 
 @router.message(Command("sh"))
 async def cmd_sh(
     message: Message,
     command: CommandObject,
-    state: FSMContext
+    state: FSMContext,
 ):
     await state.clear()
 
@@ -575,16 +802,33 @@ async def cmd_sh(
     await process_checker(
         message,
         command.args,
-        "Shopify Single"
+        "Shopify Single",
     )
 
-# ================= PAYPAL =================
+@router.message(Command("msh"))
+async def cmd_msh(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+):
+    await state.clear()
+
+    if not command.args:
+        return await message.answer(
+            "Usage:\n<code>/msh cards</code>"
+        )
+
+    await process_checker(
+        message,
+        command.args,
+        "Shopify Mass",
+    )
 
 @router.message(Command("pp"))
 async def cmd_pp(
     message: Message,
     command: CommandObject,
-    state: FSMContext
+    state: FSMContext,
 ):
     await state.clear()
 
@@ -596,79 +840,88 @@ async def cmd_pp(
     await process_checker(
         message,
         command.args,
-        "PayPal Single"
+        "PayPal Single",
     )
-
-# ================= MASS SHOPIFY =================
-
-@router.message(Command("msh"))
-async def cmd_msh(
-    message: Message,
-    command: CommandObject,
-    state: FSMContext
-):
-    await state.clear()
-
-    text = command.args or ""
-
-    if not text.strip():
-        return await message.answer(
-            "Usage:\n<code>/msh cards</code>"
-        )
-
-    await process_checker(
-        message,
-        text,
-        "Shopify Mass"
-    )
-
-# ================= MASS PAYPAL =================
 
 @router.message(Command("mpp"))
 async def cmd_mpp(
     message: Message,
     command: CommandObject,
-    state: FSMContext
+    state: FSMContext,
 ):
     await state.clear()
 
-    text = command.args or ""
-
-    if not text.strip():
+    if not command.args:
         return await message.answer(
             "Usage:\n<code>/mpp cards</code>"
         )
 
     await process_checker(
         message,
-        text,
-        "PayPal Mass"
+        command.args,
+        "PayPal Mass",
     )
 
-# ================= COMMANDS =================
+# ================= BOT COMMANDS =================
 
-async def setup_bot_commands(bot: Bot):
+async def setup_bot_commands(bot):
 
     user_commands = [
-        BotCommand(command="start", description="Start bot"),
-        BotCommand(command="status", description="Check status"),
-        BotCommand(command="pp", description="Single PayPal"),
-        BotCommand(command="mpp", description="Mass PayPal"),
-        BotCommand(command="sh", description="Single Shopify"),
-        BotCommand(command="msh", description="Mass Shopify"),
-        BotCommand(command="redeem", description="Redeem key"),
-        BotCommand(command="myid", description="Your ID"),
+        BotCommand(
+            command="start",
+            description="Open menu",
+        ),
+        BotCommand(
+            command="status",
+            description="Subscription",
+        ),
+        BotCommand(
+            command="sh",
+            description="Single Shopify",
+        ),
+        BotCommand(
+            command="msh",
+            description="Mass Shopify",
+        ),
+        BotCommand(
+            command="pp",
+            description="Single PayPal",
+        ),
+        BotCommand(
+            command="mpp",
+            description="Mass PayPal",
+        ),
+        BotCommand(
+            command="redeem",
+            description="Redeem key",
+        ),
+        BotCommand(
+            command="myid",
+            description="Your ID",
+        ),
     ]
 
-    admin_commands = user_commands + [
-        BotCommand(command="genkey", description="Generate keys"),
-        BotCommand(command="broadcast", description="Broadcast"),
-        BotCommand(command="users", description="Stats"),
-    ]
+    admin_commands = (
+        user_commands
+        + [
+            BotCommand(
+                command="genkey",
+                description="Generate keys",
+            ),
+            BotCommand(
+                command="broadcast",
+                description="Broadcast",
+            ),
+            BotCommand(
+                command="users",
+                description="Statistics",
+            ),
+        ]
+    )
 
     await bot.set_my_commands(
         user_commands,
-        scope=BotCommandScopeAllPrivateChats()
+        scope=BotCommandScopeAllPrivateChats(),
     )
 
     for admin_id in ADMIN_IDS:
@@ -677,18 +930,19 @@ async def setup_bot_commands(bot: Bot):
                 admin_commands,
                 scope=BotCommandScopeChat(
                     chat_id=int(admin_id)
-                )
+                ),
             )
 
         except Exception as e:
             print(
-                f"Failed pushing admin cmds to {admin_id}: {e}"
+                f"Failed admin cmds {admin_id}: {e}"
             )
 
 # ================= MAIN =================
 
 async def main():
-    print("BOT STARTED")
+
+    print("🐻 BEAR CHECKER STARTED")
 
     print("ADMINS:", ADMIN_IDS)
 
@@ -696,7 +950,7 @@ async def main():
 
     await dp.start_polling(bot)
 
-# ================= START =================
+# ================= RUN =================
 
 if __name__ == "__main__":
     asyncio.run(main())
