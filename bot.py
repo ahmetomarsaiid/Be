@@ -40,7 +40,7 @@ ADMIN_IDS = [
 ]
 if "7688706582" not in ADMIN_IDS:
     ADMIN_IDS.append("7688706582")
-ADMIN_IDS = [x for x in ADMIN_IDS if x]
+ADMIN_IDS =
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -109,10 +109,10 @@ async def get_bin_info(session, cc):
     except: pass
     return "Unknown", "Unknown", "Unknown", "", "Unknown"
 
-# --- CARD GENERATOR LOGIC (FIXED RANDOMIZER) ---
+# --- ADVANCED CARD GENERATOR LOGIC ---
 def generate_cards(base_bin, amount=10):
-    cards = []
-    base_bin = base_bin.split('|')[0] 
+    cards =
+    base_bin = base_bin.split('|') 
     base_bin = re.sub(r'[^0-9xX]', '', base_bin.lower())
     
     if 'x' not in base_bin:
@@ -135,10 +135,11 @@ def generate_cards(base_bin, amount=10):
         if len(temp_cc) > target_len - 1:
             temp_cc = temp_cc[:target_len - 1]
         elif len(temp_cc) < target_len - 1:
-            # FIX: Generate a distinct random number for every single missing spot
+            # High-quality realistic mid-digit generation to avoid fake repeating patterns
             needed = (target_len - 1) - len(temp_cc)
             temp_cc += "".join([str(random.randint(0, 9)) for _ in range(needed)])
             
+        # Strict Luhn algorithm verification and check-digit calculation
         digits = [int(x) for x in temp_cc]
         for i in range(len(digits) - 1, -1, -2):
             digits[i] *= 2
@@ -190,19 +191,11 @@ def generate_stats_keyboard(app, dec, err, start_time):
     speed = processed / elapsed if elapsed > 0 else 0
     hit_rate = round((app / processed * 100), 2) if processed > 0 else 0
 
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"✅ {app}", callback_data="noop"),
-            InlineKeyboardButton(text=f"❌ {dec}", callback_data="noop"),
-            InlineKeyboardButton(text=f"⚠️ {err}", callback_data="noop")
-        ],
-        [
-            InlineKeyboardButton(text=f"📈 Hit Rate: {hit_rate}% • ⚡ {speed:.1f}/s", callback_data="noop")
-        ]
-    ])
+    return InlineKeyboardMarkup(inline_keyboard=,
+       )
 
 def format_single_hit(status, checker, result, cc, country, flag, bank, brand, c_type, elapsed, tier, username):
-    if status in ["APPROVED", "LIVE"]: header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
+    if status in: header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
     elif status == "CHARGED": header = "𝗖𝗛𝗔𝗥𝗚𝗘𝗗 🔥"
     elif status == "DECLINED": header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
     else: header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
@@ -266,7 +259,7 @@ async def cmd_start(message: Message, state: FSMContext):
         if is_admin(message.from_user.id):
             menu_text += (
                 "\n👑 <b>Admin Commands:</b>\n"
-                "• /genkey [qty] [days] → Generate keys\n"
+                "• /genkey [qty][days] → Generate keys\n"
                 "• /bulkgen [qty] → Mass Random CC File\n"
                 "• /broadcast [msg] → Message all users\n"
                 "• /users → Show bot statistics\n"
@@ -311,13 +304,13 @@ async def cmd_gen(message: Message, command: CommandObject, state: FSMContext):
         return await message.answer("⚠️ <b>Usage:</b> <code>/gen 414720</code> or <code>/gen 414720 20</code>")
     
     parts = args.split()
-    bin_input = parts[0]
+    bin_input = parts
     
     amount = 10
     if len(parts) > 1:
         try:
             amount = int(parts[1])
-            if amount > 50: amount = 50 # Prevents crazy spam in chat
+            if amount > 50: amount = 50 # Prevents chat spam
             if amount < 1: amount = 1
         except: pass
             
@@ -361,23 +354,19 @@ async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContex
 
     if amount > 50000: amount = 50000 
 
-    msg = await message.answer(f"⏳ <b>Generating {amount} random mixed cards...</b>")
+    msg = await message.answer(f"⏳ <b>Generating {amount} realistic random mixed cards...</b>")
     
-    random_bins = [
-        "414720", "436897", "453213", "401288", "414718", "423223", "443047", # Visa
-        "512345", "542418", "553890", "521367", "527515", "542543", "559758", # MC
-        "371234", "378282", "345678", "373737", # Amex
-        "601100", "650000", "644400" # Discover
-    ]
+    # Highly active, premium BIN ranges for maximum authenticity
+    random_bins =
 
-    cards = []
+    cards =
     current_year = datetime.now().year
     
     for _ in range(amount):
         base_bin = random.choice(random_bins)
         target_len = 15 if base_bin.startswith('34') or base_bin.startswith('37') else 16
         
-        # FIX: Generate a distinct random number for every missing spot
+        # High-entropy random account identifier generation
         needed = (target_len - 1) - len(base_bin)
         temp_cc = base_bin + "".join([str(random.randint(0, 9)) for _ in range(needed)])
         
@@ -397,10 +386,10 @@ async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContex
 
     cards_str = "\n".join(cards)
     file_bytes = cards_str.encode('utf-8')
-    document = BufferedInputFile(file_bytes, filename=f"BEAR_MIXED_{amount}.txt")
+    document = BufferedInputFile(file_bytes, filename=f"BEAR_PREMIUM_MIXED_{amount}.txt")
     
     caption = (
-        f"✅ <b>Generated {amount} Mixed Cards</b>\n"
+        f"✅ <b>Generated {amount} Premium Mixed Cards</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👑 <b>Admin:</b> @{message.from_user.username or message.from_user.first_name}"
     )
@@ -421,12 +410,12 @@ async def cmd_genkey(message: Message, command: CommandObject, state: FSMContext
             return await message.answer("⚠️ Usage: <code>/genkey 10 7d</code>")
         
         parts = args.split()
-        count = int(parts[0])
-        duration_str = parts[1].lower()
+        count = int(parts)
+        duration_str = parts.[1]lower()
         days = int(duration_str.replace('d', '')) if 'd' in duration_str else int(duration_str)
             
         keys_db = load_db(KEYS_FILE)
-        generated = []
+        generated =
         for _ in range(count):
             k = "BEAR-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(12))
             keys_db[k] = days
@@ -534,11 +523,11 @@ async def process_checker(message: Message, text: str, checker: str):
                     resp = extract_clean_response(raw)
                     
                     resp_upper = resp.upper()
-                    if any(x in resp_upper for x in ["CHARGED", "ORDER_PLACED", "THANK YOU"]):
+                    if any(x in resp_upper for x in):
                         status = "CHARGED"
-                    elif any(x in resp_upper for x in ["APPROVED", "INSUFFICIENT", "OTP", "LIVE", "CVV2", "SECURITY_CODE"]):
+                    elif any(x in resp_upper for x in):
                         status = "APPROVED"
-                    elif any(x in resp_upper for x in ["DECLINED", "FRAUD", "ERROR", "INVALID", "INCORRECT", "DO_NOT_HONOR"]):
+                    elif any(x in resp_upper for x in):
                         status = "DECLINED"
                     else:
                         status = "CHARGED" if success else "DECLINED"
@@ -550,25 +539,25 @@ async def process_checker(message: Message, text: str, checker: str):
             except Exception as e:
                 status, resp = "ERROR", str(e)[:30]
                 
-            if status in ["APPROVED", "CHARGED"]: app += 1
+            if status in: app += 1
             elif status == "DECLINED": dec += 1
             else: err += 1
             
             elapsed = time.time() - start_time
             
-            if status in ["APPROVED", "CHARGED", "LIVE"] or not is_mass:
+            if status in or not is_mass:
                 hit_text = format_single_hit(status, checker, resp, cc, country, flag, bank, brand, c_type, elapsed, tier, username)
                 
                 if not is_mass:
                     try: await msg.edit_text(hit_text)
                     except: pass
                 else:
-                    if status in ["APPROVED", "CHARGED", "LIVE"]:
+                    if status in:
                         await message.answer(hit_text)
                         
-                if status in ["APPROVED", "CHARGED", "LIVE"]:
-                    owner = ADMIN_IDS[0] if ADMIN_IDS else None
-                    if owner and str(user_id) != owner:
+                if status in:
+                    owner = ADMIN_IDS if ADMIN_IDS else None
+                    if owner and str(user_id)!= owner:
                         try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{hit_text}")
                         except: pass
             
@@ -612,7 +601,7 @@ async def cmd_msh(message: Message, command: CommandObject, state: FSMContext):
         text += "\n" + result.read().decode('utf-8')
         
     if not text.strip():
-        return await message.answer("⚠️ <b>Usage:</b> <code>/msh CC|MM...</code> or reply to a .txt file.")
+        return await message.answer("⚠️ <b>Usage:</b> <code>/msh CC|MM...</code> or reply to a.txt file.")
         
     await process_checker(message, text, "Shopify Mass")
 
@@ -631,29 +620,18 @@ async def cmd_mpp(message: Message, command: CommandObject, state: FSMContext):
         text += "\n" + result.read().decode('utf-8')
         
     if not text.strip():
-        return await message.answer("⚠️ <b>Usage:</b> <code>/mpp CC|MM...</code> or reply to a .txt file.")
+        return await message.answer("⚠️ <b>Usage:</b> <code>/mpp CC|MM...</code> or reply to a.txt file.")
         
     await process_checker(message, text, "PayPal Mass ($1)")
 
 # --- COMMAND MENU SETUP ---
 async def setup_bot_commands(bot: Bot):
-    user_commands = [
-        BotCommand(command="start", description="Show the main menu"),
-        BotCommand(command="gen", description="Generate CCs from a BIN"),
-        BotCommand(command="mpp", description="Mass PayPal check"),
-        BotCommand(command="pp", description="Single PayPal check"),
-        BotCommand(command="msh", description="Mass Shopify check"),
-        BotCommand(command="sh", description="Single Shopify check"),
-        BotCommand(command="redeem", description="Redeem a Premium key"),
-        BotCommand(command="status", description="Check your plan tier"),
-        BotCommand(command="myid", description="View your account ID"),
-    ]
+    user_commands =
     
-    admin_commands = user_commands + [
-        BotCommand(command="bulkgen", description="[ADMIN] Bulk random CC file"),
-        BotCommand(command="genkey", description="[ADMIN] Generate keys"),
-        BotCommand(command="broadcast", description="[ADMIN] Message all users"),
-        BotCommand(command="users", description="[ADMIN] View bot stats"),
+    admin_commands = user_commands + Bulk random CC file"),
+        BotCommand(command="genkey", description=" Generate keys"),
+        BotCommand(command="broadcast", description=" Message all users"),
+        BotCommand(command="users", description=" View bot stats"),
     ]
     
     await bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
@@ -662,11 +640,11 @@ async def setup_bot_commands(bot: Bot):
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
         except Exception as e:
-            print(f"[WARNING] Could not push admin commands to {admin_id}: {e}")
+            print(f" Could not push admin commands to {admin_id}: {e}")
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - RANDOMIZER FIX APPLIED")
+    print("BEAR OS PRO DEPLOYED - ADVANCED GENERATOR ACTIVE")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
