@@ -259,7 +259,7 @@ async def cmd_genkey(message: Message, command: CommandObject, state: FSMContext
         
         parts = args.split()
         count = int(parts)
-        duration_str = parts.[1]lower()
+        duration_str = parts.[span_0](start_span)[span_0](end_span)lower()
         days = int(duration_str.replace('d', '')) if 'd' in duration_str else int(duration_str)
             
         keys_db = load_db(KEYS_FILE)
@@ -503,7 +503,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - FULLY REPAIRED")
+    print("BEAR OS PRO DEPLOYED - CHECKER ONLY MODE (SYNTAX FIXED)")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
