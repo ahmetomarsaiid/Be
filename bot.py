@@ -499,11 +499,11 @@ async def setup_bot_commands(bot: Bot):
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
         except Exception as e:
-            print(f" Could not push admin commands to {admin_id}: {e}")
+            print(f"Could not push admin commands to {admin_id}: {e}")
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - SYNTAX FULLY FIXED")
+    print("BEAR OS PRO DEPLOYED - CHECKER ONLY MODE (SYNTAX FIXED)")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
