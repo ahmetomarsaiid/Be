@@ -7,7 +7,6 @@ import time
 import re
 import aiohttp
 import html
-import random
 from datetime import datetime, timedelta
 import traceback
 
@@ -16,8 +15,7 @@ from aiogram.types import (
     Message, CallbackQuery, BotCommand, 
     BotCommandScopeDefault, BotCommandScopeChat, 
     BotCommandScopeAllPrivateChats, 
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    BufferedInputFile
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
@@ -109,52 +107,6 @@ async def get_bin_info(session, cc):
     except: pass
     return "Unknown", "Unknown", "Unknown", "", "Unknown"
 
-# --- ADVANCED CARD GENERATOR LOGIC ---
-def generate_cards(base_bin, amount=10):
-    cards =
-    base_bin = base_bin.split('|') 
-    base_bin = re.sub(r'[^0-9xX]', '', base_bin.lower())
-    
-    if 'x' not in base_bin:
-        if len(base_bin) < 15:
-            base_bin = base_bin.ljust(15, 'x')
-        elif len(base_bin) == 16:
-            base_bin = base_bin[:15] 
-            
-    target_len = 15 if base_bin.startswith('34') or base_bin.startswith('37') else 16
-    current_year = datetime.now().year
-    
-    for _ in range(amount):
-        temp_cc = ""
-        for char in base_bin:
-            if char == 'x':
-                temp_cc += str(random.randint(0, 9))
-            else:
-                temp_cc += char
-                
-        if len(temp_cc) > target_len - 1:
-            temp_cc = temp_cc[:target_len - 1]
-        elif len(temp_cc) < target_len - 1:
-            # High-quality realistic mid-digit generation to avoid fake repeating patterns
-            needed = (target_len - 1) - len(temp_cc)
-            temp_cc += "".join([str(random.randint(0, 9)) for _ in range(needed)])
-            
-        # Strict Luhn algorithm verification and check-digit calculation
-        digits = [int(x) for x in temp_cc]
-        for i in range(len(digits) - 1, -1, -2):
-            digits[i] *= 2
-            if digits[i] > 9: digits[i] -= 9
-        check_digit = (10 - (sum(digits) % 10)) % 10
-        cc = temp_cc + str(check_digit)
-        
-        mes = str(random.randint(1, 12)).zfill(2)
-        ano = str(random.randint(current_year, current_year + 6))
-        cvv_len = 4 if cc.startswith('3') else 3
-        cvv = "".join([str(random.randint(0, 9)) for _ in range(cvv_len)])
-        
-        cards.append(f"{cc}|{mes}|{ano}|{cvv}")
-    return cards
-
 # --- FSM STATES ---
 class AppStates(StatesGroup):
     waiting_shopify_single = State()
@@ -243,12 +195,11 @@ async def cmd_start(message: Message, state: FSMContext):
         menu_text = (
             "👋 <b>Welcome to the Checker Bot</b>\n\n"
             "📌 <b>Available Commands:</b>\n\n"
-            "💳 <b>Checkers & Tools:</b>\n"
+            "💳 <b>Checkers:</b>\n"
             "• /mpp → Mass PayPal check\n"
             "• /pp → Single PayPal check\n"
             "• /msh → Mass Shopify check\n"
-            "• /sh → Single Shopify check\n"
-            "• /gen → Generate custom CCs\n\n"
+            "• /sh → Single Shopify check\n\n"
             "🔑 <b>Keys:</b>\n"
             "• /redeem → Redeem a key\n\n"
             "⚙️ <b>Other:</b>\n"
@@ -260,7 +211,6 @@ async def cmd_start(message: Message, state: FSMContext):
             menu_text += (
                 "\n👑 <b>Admin Commands:</b>\n"
                 "• /genkey [qty][days] → Generate keys\n"
-                "• /bulkgen [qty] → Mass Random CC File\n"
                 "• /broadcast [msg] → Message all users\n"
                 "• /users → Show bot statistics\n"
             )
@@ -294,108 +244,6 @@ async def cmd_status(message: Message, state: FSMContext):
     except Exception as e:
         safe_error = html.escape(str(e))
         await message.answer(f"⚠️ <b>BOT ERROR:</b>\n<code>{safe_error}</code>")
-
-# --- CC GENERATORS ---
-@router.message(Command("gen"))
-async def cmd_gen(message: Message, command: CommandObject, state: FSMContext):
-    await state.clear()
-    args = command.args
-    if not args:
-        return await message.answer("⚠️ <b>Usage:</b> <code>/gen 414720</code> or <code>/gen 414720 20</code>")
-    
-    parts = args.split()
-    bin_input = parts
-    
-    amount = 10
-    if len(parts) > 1:
-        try:
-            amount = int(parts[1])
-            if amount > 50: amount = 50 # Prevents chat spam
-            if amount < 1: amount = 1
-        except: pass
-            
-    cards = generate_cards(bin_input, amount)
-    if not cards:
-        return await message.answer("❌ Invalid BIN format.")
-        
-    async with aiohttp.ClientSession() as session:
-        brand, bank, country, flag, c_type = await get_bin_info(session, bin_input[:6])
-        
-    cards_str = "\n".join([f"<code>{c}</code>" for c in cards])
-    username = message.from_user.username or message.from_user.first_name
-    
-    res = f"""<b>💳 𝗖𝗔𝗥𝗗 𝗚𝗘𝗡𝗘𝗥𝗔𝗧𝗢𝗥</b>
-
-<b>𝗕𝗜𝗡 ⇾</b> <code>{bin_input[:6]}</code>
-<b>𝗜𝗻𝗳𝗼 ⇾</b> {brand} — {c_type.upper()}
-<b>𝗕𝗮𝗻𝗸 ⇾</b> {bank} | {country} {flag}
-<b>𝗔𝗺𝗼𝘂𝗻𝘁 ⇾</b> {amount}
-◆━━━━━━━━━━━━━━━━━━━━━◆
-{cards_str}
-◆━━━━━━━━━━━━━━━━━━━━━◆
-<b>𝗚𝗲𝗻𝗲𝗿𝗮𝘁𝗲𝗱 𝗕𝘆 ⇾</b> @{username}"""
-
-    await message.answer(res)
-
-@router.message(Command("bulkgen"))
-async def cmd_bulkgen(message: Message, command: CommandObject, state: FSMContext):
-    await state.clear()
-    if not is_admin(message.from_user.id): 
-        return await message.answer("❌ Admin only command.")
-
-    args = command.args
-    amount = 1000 
-    
-    if args:
-        try:
-            amount = int(args.strip())
-        except:
-            return await message.answer("⚠️ <b>Usage:</b> <code>/bulkgen 1000</code>")
-
-    if amount > 50000: amount = 50000 
-
-    msg = await message.answer(f"⏳ <b>Generating {amount} realistic random mixed cards...</b>")
-    
-    # Highly active, premium BIN ranges for maximum authenticity
-    random_bins =
-
-    cards =
-    current_year = datetime.now().year
-    
-    for _ in range(amount):
-        base_bin = random.choice(random_bins)
-        target_len = 15 if base_bin.startswith('34') or base_bin.startswith('37') else 16
-        
-        # High-entropy random account identifier generation
-        needed = (target_len - 1) - len(base_bin)
-        temp_cc = base_bin + "".join([str(random.randint(0, 9)) for _ in range(needed)])
-        
-        digits = [int(x) for x in temp_cc]
-        for i in range(len(digits) - 1, -1, -2):
-            digits[i] *= 2
-            if digits[i] > 9: digits[i] -= 9
-        check_digit = (10 - (sum(digits) % 10)) % 10
-        cc = temp_cc + str(check_digit)
-        
-        mes = str(random.randint(1, 12)).zfill(2)
-        ano = str(random.randint(current_year, current_year + 7))
-        cvv_len = 4 if cc.startswith('3') else 3
-        cvv = "".join([str(random.randint(0, 9)) for _ in range(cvv_len)])
-        
-        cards.append(f"{cc}|{mes}|{ano}|{cvv}")
-
-    cards_str = "\n".join(cards)
-    file_bytes = cards_str.encode('utf-8')
-    document = BufferedInputFile(file_bytes, filename=f"BEAR_PREMIUM_MIXED_{amount}.txt")
-    
-    caption = (
-        f"✅ <b>Generated {amount} Premium Mixed Cards</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"👑 <b>Admin:</b> @{message.from_user.username or message.from_user.first_name}"
-    )
-
-    await message.answer_document(document, caption=caption)
-    await msg.delete()
 
 # --- KEY & ADMIN SYSTEM ---
 @router.message(Command("genkey"))
@@ -504,6 +352,7 @@ async def process_checker(message: Message, text: str, checker: str):
     start_time = time.time()
     username = message.from_user.username or message.from_user.first_name
     
+    # 1. SETUP INITIAL MESSAGE
     if is_mass:
         init_text = format_summary("STARTING...", checker, total_cards, app, dec, err, start_time, tier, username)
         kb = generate_stats_keyboard(app, dec, err, start_time)
@@ -511,6 +360,7 @@ async def process_checker(message: Message, text: str, checker: str):
     else:
         msg = await message.answer(f"⏳ <b>Initializing {checker}...</b>")
 
+    # 2. RUN THE CHECKER LOOP
     async with aiohttp.ClientSession() as session:
         for idx, cc in enumerate(ccs, 1):
             parts = parse_cc_string(cc)
@@ -545,6 +395,7 @@ async def process_checker(message: Message, text: str, checker: str):
             
             elapsed = time.time() - start_time
             
+            # --- 3. HANDLE SINGLE HIT OUTPUT ---
             if status in or not is_mass:
                 hit_text = format_single_hit(status, checker, resp, cc, country, flag, bank, brand, c_type, elapsed, tier, username)
                 
@@ -555,12 +406,14 @@ async def process_checker(message: Message, text: str, checker: str):
                     if status in:
                         await message.answer(hit_text)
                         
+                # Silent Admin Ping
                 if status in:
                     owner = ADMIN_IDS if ADMIN_IDS else None
                     if owner and str(user_id)!= owner:
                         try: await bot.send_message(owner, f"🔥 <b>NEW HIT</b>\n{hit_text}")
                         except: pass
             
+            # --- 4. HANDLE MASS CHECK UI UPDATES ---
             if is_mass:
                 if (idx % 3 == 0) or idx == total_cards:
                     header = "CHECKING" if idx < total_cards else "COMPLETE"
@@ -626,16 +479,19 @@ async def cmd_mpp(message: Message, command: CommandObject, state: FSMContext):
 
 # --- COMMAND MENU SETUP ---
 async def setup_bot_commands(bot: Bot):
+    # These are the commands EVERYONE will see
     user_commands =
     
-    admin_commands = user_commands + Bulk random CC file"),
-        BotCommand(command="genkey", description=" Generate keys"),
+    # These are the commands ONLY YOU will see
+    admin_commands = user_commands + Generate keys"),
         BotCommand(command="broadcast", description=" Message all users"),
         BotCommand(command="users", description=" View bot stats"),
     ]
     
+    # 1. Set default for everyone
     await bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
+    # 2. Push hidden commands only to admins
     for admin_id in ADMIN_IDS:
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
@@ -644,7 +500,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - ADVANCED GENERATOR ACTIVE")
+    print("BEAR OS PRO DEPLOYED - CHECKER ONLY MODE")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
