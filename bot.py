@@ -19,6 +19,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -227,31 +228,31 @@ def format_single_hit(
     return f"""
 <b>{header}</b>
 
-<b>𝗖𝗖 ⇾</b>
+<b>CC ⇾</b>
 <code>{cc}</code>
 
-<b>𝗚𝗮𝘁𝗲𝘄𝗮𝘆 ⇾</b>
+<b>Gateway ⇾</b>
 {checker}
 
-<b>𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 ⇾</b>
+<b>Response ⇾</b>
 <code>{safe_result}</code>
 
-<b>𝗕𝗜𝗡 ⇾</b>
+<b>BIN ⇾</b>
 {brand} — {c_type}
 
-<b>𝗕𝗮𝗻𝗸 ⇾</b>
+<b>Bank ⇾</b>
 {bank}
 
-<b>𝗖𝗼𝘂𝗻𝘁𝗿𝘆 ⇾</b>
+<b>Country ⇾</b>
 {country} {flag}
 
-<b>𝗧𝗶𝗺𝗲 ⇾</b>
+<b>Time ⇾</b>
 {elapsed:.2f}s
 
-<b>𝗧𝗶𝗲𝗿 ⇾</b>
+<b>Tier ⇾</b>
 {tier}
 
-<b>𝗕𝘆 ⇾</b>
+<b>By ⇾</b>
 @{username}
 """
 
@@ -283,91 +284,55 @@ async def cmd_start(
     )
 
     text = f"""
-╔════════════════════╗
-      🐻 BEAR CHECKER
-╚════════════════════╝
+🐻 <b>BEAR CHECKER</b>
 
-👋 <b>Welcome {html.escape(username)}</b>
+👋 {html.escape(username)}
+🎫 {tier}
 
-🎫 <b>Your Tier:</b> {tier}
+━━━━━━━━━━━━
+🛒 <b>SHOPIFY</b>
+━━━━━━━━━━━━
 
-━━━━━━━━━━━━━━━━━━
-🛒 <b>SHOPIFY COMMANDS</b>
-━━━━━━━━━━━━━━━━━━
+<code>/sh</code> → Single Check
+<code>/msh</code> → Mass Check
 
-<b>/sh</b>
-➜ Single Shopify Check
+➜ Supports:
+• Normal cards
+• Reply to .txt file
 
-<code>/sh CC|MM|YYYY|CVV</code>
+━━━━━━━━━━━━
+💰 <b>PAYPAL</b>
+━━━━━━━━━━━━
 
-<b>/msh</b>
-➜ Mass Shopify Check
+<code>/pp</code> → Single Check
+<code>/mpp</code> → Mass Check
 
-<code>/msh CC1|MM|YYYY|CVV
-CC2|MM|YYYY|CVV</code>
+➜ Supports:
+• Normal cards
+• Reply to .txt file
 
-━━━━━━━━━━━━━━━━━━
-💰 <b>PAYPAL COMMANDS</b>
-━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━
+🔑 <b>SYSTEM</b>
+━━━━━━━━━━━━
 
-<b>/pp</b>
-➜ Single PayPal Check
-
-<code>/pp CC|MM|YYYY|CVV</code>
-
-<b>/mpp</b>
-➜ Mass PayPal Check
-
-<code>/mpp CC1|MM|YYYY|CVV
-CC2|MM|YYYY|CVV</code>
-
-━━━━━━━━━━━━━━━━━━
-🔑 <b>PREMIUM / KEYS</b>
-━━━━━━━━━━━━━━━━━━
-
-<b>/redeem</b>
-➜ Redeem Premium Key
-
-<code>/redeem BEAR-XXXX</code>
-
-━━━━━━━━━━━━━━━━━━
-⚙️ <b>SYSTEM COMMANDS</b>
-━━━━━━━━━━━━━━━━━━
-
-<b>/status</b>
-➜ View Subscription Status
-
-<b>/myid</b>
-➜ View Telegram Account ID
+<code>/redeem</code> → Redeem Key
+<code>/status</code> → Subscription
+<code>/myid</code> → Telegram ID
 """
 
     if is_admin(message.from_user.id):
         text += """
 
-━━━━━━━━━━━━━━━━━━
-👑 <b>ADMIN COMMANDS</b>
-━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━
+👑 <b>ADMIN</b>
+━━━━━━━━━━━━
 
-<b>/genkey</b>
-➜ Generate Premium Keys
-
-<code>/genkey 10 7d</code>
-
-<b>/broadcast</b>
-➜ Send Message To All Users
-
-<code>/broadcast Hello Users</code>
-
-<b>/users</b>
-➜ View Bot Statistics
+<code>/genkey</code> → Generate Keys
+<code>/broadcast</code> → Message Users
+<code>/users</code> → Bot Stats
 """
 
-    text += """
-
-━━━━━━━━━━━━━━━━━━
-🔥 POWERED BY BEAR
-━━━━━━━━━━━━━━━━━━
-"""
+    text += "\n\n🔥 <b>Powered By BEAR</b>"
 
     await message.answer(text)
 
@@ -386,10 +351,9 @@ async def cmd_status(
 
     await message.answer(
         f"""
-👤 <b>Your Status</b>
+👤 <b>Status</b>
 
-🎫 Tier:
-{tier}
+🎫 {tier}
 """
     )
 
@@ -472,10 +436,8 @@ async def cmd_genkey(
         save_db(KEYS_FILE, keys_db)
 
         await message.answer(
-            f"""
-✅ Generated {count} Keys
-
-""" + "\n".join(generated)
+            f"✅ Generated {count} keys\n\n"
+            + "\n".join(generated)
         )
 
     except Exception as e:
@@ -508,7 +470,7 @@ async def cmd_redeem(
 
     if key not in keys_db:
         return await message.answer(
-            "❌ Invalid Key"
+            "❌ Invalid key"
         )
 
     days = keys_db[key]
@@ -528,12 +490,7 @@ async def cmd_redeem(
     save_db(KEYS_FILE, keys_db)
 
     await message.answer(
-        f"""
-✅ Premium Activated
-
-Days:
-{days}
-"""
+        f"✅ Premium activated for {days} days"
     )
 
 # ================= USERS =================
@@ -784,7 +741,7 @@ async def process_checker(
 """
                 )
 
-# ================= COMMANDS =================
+# ================= SINGLE SHOPIFY =================
 
 @router.message(Command("sh"))
 async def cmd_sh(
@@ -805,6 +762,8 @@ async def cmd_sh(
         "Shopify Single",
     )
 
+# ================= MASS SHOPIFY =================
+
 @router.message(Command("msh"))
 async def cmd_msh(
     message: Message,
@@ -813,16 +772,54 @@ async def cmd_msh(
 ):
     await state.clear()
 
-    if not command.args:
+    text = command.args or ""
+
+    # Reply to txt file
+    if (
+        message.reply_to_message
+        and message.reply_to_message.document
+    ):
+        file = await bot.get_file(
+            message.reply_to_message.document.file_id
+        )
+
+        downloaded = await bot.download_file(
+            file.file_path
+        )
+
+        text += "\n" + downloaded.read().decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+    # Direct txt upload
+    elif message.document:
+
+        file = await bot.get_file(
+            message.document.file_id
+        )
+
+        downloaded = await bot.download_file(
+            file.file_path
+        )
+
+        text += "\n" + downloaded.read().decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+    if not text.strip():
         return await message.answer(
-            "Usage:\n<code>/msh cards</code>"
+            "Reply to .txt file or send cards"
         )
 
     await process_checker(
         message,
-        command.args,
+        text,
         "Shopify Mass",
     )
+
+# ================= SINGLE PAYPAL =================
 
 @router.message(Command("pp"))
 async def cmd_pp(
@@ -843,6 +840,8 @@ async def cmd_pp(
         "PayPal Single",
     )
 
+# ================= MASS PAYPAL =================
+
 @router.message(Command("mpp"))
 async def cmd_mpp(
     message: Message,
@@ -851,14 +850,50 @@ async def cmd_mpp(
 ):
     await state.clear()
 
-    if not command.args:
+    text = command.args or ""
+
+    # Reply to txt file
+    if (
+        message.reply_to_message
+        and message.reply_to_message.document
+    ):
+        file = await bot.get_file(
+            message.reply_to_message.document.file_id
+        )
+
+        downloaded = await bot.download_file(
+            file.file_path
+        )
+
+        text += "\n" + downloaded.read().decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+    # Direct txt upload
+    elif message.document:
+
+        file = await bot.get_file(
+            message.document.file_id
+        )
+
+        downloaded = await bot.download_file(
+            file.file_path
+        )
+
+        text += "\n" + downloaded.read().decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+    if not text.strip():
         return await message.answer(
-            "Usage:\n<code>/mpp cards</code>"
+            "Reply to .txt file or send cards"
         )
 
     await process_checker(
         message,
-        command.args,
+        text,
         "PayPal Mass",
     )
 
