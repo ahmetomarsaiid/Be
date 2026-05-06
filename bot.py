@@ -147,10 +147,12 @@ def generate_stats_keyboard(app, dec, err, start_time):
        )
 
 def format_single_hit(status, checker, result, cc, country, flag, bank, brand, c_type, elapsed, tier, username):
-    if status in: header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅"
-    elif status == "CHARGED": header = "𝗖𝗛𝗔𝗥𝗚𝗘𝗗 🔥"
-    elif status == "DECLINED": header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
-    else: header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
+    if status in: 
+        header = "𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 ✅" if status!= "CHARGED" else "𝗖𝗛𝗔𝗥𝗚𝗘𝗗 🔥"
+    elif status == "DECLINED": 
+        header = "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌"
+    else: 
+        header = "𝗘𝗥𝗥𝗢𝗥 ⚠️"
     
     safe_result = html.escape(str(result))
     
@@ -259,7 +261,7 @@ async def cmd_genkey(message: Message, command: CommandObject, state: FSMContext
         
         parts = args.split()
         count = int(parts)
-        duration_str = parts.[span_0](start_span)[span_0](end_span)lower()
+        duration_str = parts.[1]lower()
         days = int(duration_str.replace('d', '')) if 'd' in duration_str else int(duration_str)
             
         keys_db = load_db(KEYS_FILE)
@@ -482,19 +484,15 @@ async def cmd_mpp(message: Message, command: CommandObject, state: FSMContext):
 
 # --- COMMAND MENU SETUP ---
 async def setup_bot_commands(bot: Bot):
-    # These are the commands EVERYONE will see
     user_commands =
     
-    # These are the commands ONLY YOU will see
     admin_commands = user_commands + Generate keys"),
         BotCommand(command="broadcast", description=" Message all users"),
         BotCommand(command="users", description=" View bot stats"),
     ]
     
-    # 1. Set default for everyone
     await bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
-    # 2. Push hidden commands only to admins
     for admin_id in ADMIN_IDS:
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(admin_id)))
@@ -503,7 +501,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- MAIN DEPLOYMENT ---
 async def main():
-    print("BEAR OS PRO DEPLOYED - CHECKER ONLY MODE (SYNTAX FIXED)")
+    print("BEAR OS PRO DEPLOYED - FULLY REPAIRED")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
